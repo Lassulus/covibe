@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/lassulus/covibe/internal/dashboard"
-	"github.com/lassulus/covibe/internal/mux"
+	"github.com/lassulus/covibe/internal/launch"
 	"github.com/lassulus/covibe/internal/session"
 	"github.com/lassulus/covibe/internal/spool"
 )
@@ -151,43 +151,26 @@ func cmdStart(args []string) error {
 		}
 		*dir = wd
 	}
-	self, err := os.Executable()
-	if err != nil {
-		return err
+	opts := launch.Options{
+		Name:       *name,
+		Dir:        *dir,
+		Mux:        *muxName,
+		MuxSession: *muxSession,
+		Relay:      *relay,
+		WebURL:     *web,
+		Omp:        *omp,
+		AutoCollab: *auto,
+		StateDir:   *stateDir,
 	}
-	launcher, err := mux.For(*muxName)
-	if err != nil {
-		return err
-	}
-
-	inner := []string{self, "session",
-		"--name", *name,
-		"--dir", *dir,
-		"--omp", *omp,
-		"--auto-collab", *auto,
-		"--mux", *muxName,
-		"--mux-session", *muxSession,
-	}
-	if *relay != "" {
-		inner = append(inner, "--relay", *relay)
-	}
-	if *web != "" {
-		inner = append(inner, "--web", *web)
-	}
-	if *stateDir != "" {
-		inner = append(inner, "--state-dir", *stateDir)
-	}
-
-	spec := mux.Spec{Name: *name, Dir: *dir, Session: *muxSession, InnerArgv: inner}
 	if *dryRun {
-		argv, err := launcher.Command(spec)
+		argv, err := launch.Command(opts)
 		if err != nil {
 			return err
 		}
 		fmt.Println(strings.Join(argv, " "))
 		return nil
 	}
-	if err := launcher.Launch(spec); err != nil {
+	if err := launch.Launch(opts); err != nil {
 		return err
 	}
 	fmt.Printf("started %q in %s session %q\n", *name, *muxName, *muxSession)
@@ -243,6 +226,10 @@ func cmdServe(args []string) error {
 	allowEmails := fs.String("allow-emails", env("COVIBE_ALLOW_EMAILS", ""), "comma-separated allowed emails")
 	allowDomains := fs.String("allow-domains", env("COVIBE_ALLOW_DOMAINS", ""), "comma-separated allowed email domains")
 	allowSubs := fs.String("allow-subs", env("COVIBE_ALLOW_SUBS", ""), "comma-separated allowed subject ids")
+	workspace := fs.String("workspace", env("COVIBE_WORKSPACE", ""), "workspace root enabling web session creation (sessions clamped inside it)")
+	muxName := fs.String("mux", env("COVIBE_MUX", "zellij"), "multiplexer for created sessions: zellij|tmux")
+	muxSession := fs.String("mux-session", env("COVIBE_MUX_SESSION", "covibe"), "multiplexer session name for created sessions")
+	ompBin := fs.String("omp", env("COVIBE_OMP", "omp"), "omp binary for created sessions")
 	_ = fs.Parse(args)
 
 	store, err := spool.Open(*stateDir)
@@ -265,12 +252,29 @@ func cmdServe(args []string) error {
 	if err != nil {
 		return err
 	}
-	srv := dashboard.NewServer(dashboard.Config{
-		Store:  store,
-		Auth:   auth,
-		Relay:  *relay,
-		WebURL: *web,
-	})
+	cfg := dashboard.Config{
+		Store:         store,
+		Auth:          auth,
+		Relay:         *relay,
+		WebURL:        *web,
+		WorkspaceRoot: *workspace,
+	}
+	if *workspace != "" {
+		cfg.Create = func(name, dir string) error {
+			return launch.Launch(launch.Options{
+				Name:       name,
+				Dir:        dir,
+				Mux:        *muxName,
+				MuxSession: *muxSession,
+				Relay:      *relay,
+				WebURL:     *web,
+				Omp:        *ompBin,
+				AutoCollab: "full",
+				StateDir:   store.Dir(),
+			})
+		}
+	}
+	srv := dashboard.NewServer(cfg)
 
 	httpSrv := newHTTPServer(*addr, srv.Handler())
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

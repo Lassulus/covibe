@@ -33,6 +33,11 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
   a.open { color:var(--accent); text-decoration:none; font-size:.85rem; }
   .empty { color:var(--muted); text-align:center; padding:3rem; }
   .waiting { color:var(--start); font-size:.82rem; }
+  .newform { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; margin-bottom:1.25rem; }
+  .newform input { background:#0b0e13; border:1px solid #2a2f37; color:var(--fg); border-radius:6px; padding:.5rem .6rem; font-size:.85rem; }
+  .newform input#newname { min-width:220px; }
+  .newform input#newdir { min-width:160px; }
+  .newerr { color:#f85149; font-size:.8rem; }
 </style>
 </head>
 <body>
@@ -45,8 +50,17 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
   </div>
 </header>
 <main>
+  {{if .CanCreate}}
+  <form id="newform" class="newform">
+    <input id="newname" name="name" placeholder="new session name" autocomplete="off"
+           pattern="[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}" title="letters, digits, space . _ - (no leading . or -)" required>
+    <input id="newdir" name="dir" placeholder="subdir (optional)" autocomplete="off">
+    <button type="submit">start session</button>
+    <span id="newerr" class="newerr"></span>
+  </form>
+  {{end}}
   <div id="grid" class="grid"></div>
-  <div id="empty" class="empty" hidden>No live sessions. Start one with <code>covibe start &lt;name&gt;</code>.</div>
+  <div id="empty" class="empty" hidden>No live sessions.{{if not .CanCreate}} Start one with <code>covibe start &lt;name&gt;</code>.{{end}}</div>
 </main>
 <script>
 const grid = document.getElementById('grid');
@@ -91,6 +105,31 @@ async function refresh(){
     grid.replaceChildren(...sessions.map(card));
     empty.hidden = sessions.length > 0;
   } catch(e){ /* transient; next tick retries */ }
+}
+
+const form = document.getElementById('newform');
+if (form){
+  form.addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const err = document.getElementById('newerr');
+    const btn = form.querySelector('button');
+    err.textContent = '';
+    btn.disabled = true;
+    try {
+      const res = await fetch('/api/sessions', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          name: document.getElementById('newname').value,
+          dir: document.getElementById('newdir').value,
+        }),
+      });
+      if (!res.ok){ err.textContent = (await res.text()).trim() || ('error '+res.status); return; }
+      form.reset();
+      setTimeout(refresh, 300);
+    } catch(ex){ err.textContent = String(ex); }
+    finally { btn.disabled = false; }
+  });
 }
 refresh();
 setInterval(refresh, 4000);

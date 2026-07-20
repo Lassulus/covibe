@@ -17,13 +17,20 @@ let
     COVIBE_RELAY = cfg.relay;
     COVIBE_WEB_URL = cfg.webUrl;
     COVIBE_MUX = cfg.mux;
+    COVIBE_MUX_SESSION = cfg.muxSession;
     OMP_AUTH_BROKER_URL = cfg.authBrokerUrl;
+    # Pin the multiplexer socket dirs so dashboard-created sessions and the
+    # user's interactive `zellij attach` / `tmux attach` share one server.
+    ZELLIJ_SOCKET_DIR = "${cfg.socketDir}/zellij";
+    TMUX_TMPDIR = cfg.socketDir;
   };
 
   dashboardEnv =
     sharedEnv
-    // {
+    // lib.filterAttrs (_: v: v != null && v != "") {
       COVIBE_ADDR = d.addr;
+      COVIBE_WORKSPACE = d.workspaceRoot;
+      COVIBE_OMP = cfg.omp;
       COVIBE_OIDC_ISSUER = d.oidc.issuer;
       COVIBE_OIDC_CLIENT_ID = d.oidc.clientId;
       COVIBE_OIDC_REDIRECT_URL = d.oidc.redirectUrl;
@@ -35,6 +42,9 @@ let
       COVIBE_INSECURE = if d.insecure then "1" else "0";
     }
     // d.extraSettings;
+
+  muxPackage = if cfg.mux == "tmux" then pkgs.tmux else pkgs.zellij;
+  dashboardPath = [ muxPackage ] ++ lib.optional (cfg.ompPackage != null) cfg.ompPackage;
 in
 {
   options.services.covibe = {
@@ -96,6 +106,36 @@ in
       description = "Terminal multiplexer covibe launches sessions in.";
     };
 
+    muxSession = lib.mkOption {
+      type = lib.types.str;
+      default = "covibe";
+      description = "Multiplexer session name that covibe tabs are opened in.";
+    };
+
+    socketDir = lib.mkOption {
+      type = lib.types.str;
+      default = cfg.stateDir;
+      defaultText = lib.literalExpression "config.services.covibe.stateDir";
+      description = ''
+        Directory pinning the multiplexer control sockets (ZELLIJ_SOCKET_DIR =
+        <socketDir>/zellij, TMUX_TMPDIR = <socketDir>). Exported to both the
+        dashboard service and interactive shells so web-created sessions and the
+        user's `zellij attach`/`tmux attach` share one server.
+      '';
+    };
+
+    omp = lib.mkOption {
+      type = lib.types.str;
+      default = "omp";
+      description = "omp binary name/path launched inside each session.";
+    };
+
+    ompPackage = lib.mkOption {
+      type = lib.types.nullOr lib.types.package;
+      default = null;
+      description = "Optional omp package placed on the dashboard service PATH so it can launch sessions.";
+    };
+
     authBrokerUrl = lib.mkOption {
       type = lib.types.str;
       default = "";
@@ -135,6 +175,18 @@ in
         type = lib.types.str;
         default = "127.0.0.1:8770";
         description = "Listen address for the dashboard.";
+      };
+
+      workspaceRoot = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        example = "/home/alice/covibe";
+        description = ''
+          Enable web-initiated session creation, clamped inside this directory.
+          The dashboard form creates <workspaceRoot>/<name> (or a supplied
+          subdir) and launches an omp covibe session there. Empty disables
+          creation from the web UI.
+        '';
       };
 
       openFirewall = lib.mkOption {
@@ -233,9 +285,14 @@ in
     environment.systemPackages = lib.mkIf cfg.installGlobally ([ cfg.package ] ++ cfg.extraPackages);
     environment.variables = lib.mkIf cfg.installGlobally sharedEnv;
 
-    systemd.tmpfiles.rules = [
-      "d ${cfg.stateDir} 0700 ${cfg.user} ${cfg.group} -"
-    ];
+    systemd.tmpfiles.rules = lib.unique (
+      [
+        "d ${cfg.stateDir} 0700 ${cfg.user} ${cfg.group} -"
+        "d ${cfg.socketDir} 0700 ${cfg.user} ${cfg.group} -"
+        "d ${cfg.socketDir}/zellij 0700 ${cfg.user} ${cfg.group} -"
+      ]
+      ++ lib.optional (d.workspaceRoot != "") "d ${d.workspaceRoot} 0700 ${cfg.user} ${cfg.group} -"
+    );
 
     systemd.services.covibe-dashboard = lib.mkIf cfg.dashboard.enable {
       description = "covibe co-vibing session dashboard";
@@ -243,6 +300,9 @@ in
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
       environment = dashboardEnv;
+      # The multiplexer client + server binaries (and optionally omp) must be
+      # reachable so the dashboard can open new sessions.
+      path = dashboardPath;
       serviceConfig = {
         ExecStart = "${lib.getExe cfg.package} serve";
         User = cfg.user;
@@ -250,17 +310,12 @@ in
         Restart = "on-failure";
         RestartSec = 2;
         EnvironmentFile = lib.mkIf (d.environmentFile != null) [ d.environmentFile ];
-        # Hardening.
-        NoNewPrivileges = true;
-        ProtectSystem = "strict";
-        ProtectHome = "read-only";
-        ReadWritePaths = [ cfg.stateDir ];
-        PrivateTmp = true;
-        ProtectKernelTunables = true;
-        ProtectControlGroups = true;
-        RestrictNamespaces = true;
-        RestrictSUIDSGID = true;
-        LockPersonality = true;
+        # Kill only the dashboard process on stop/restart, never the whole
+        # control group: the mux server and the omp sessions it spawned must
+        # outlive dashboard restarts. Those sessions are full-power dev shells,
+        # so the service is intentionally not filesystem-sandboxed.
+        KillMode = "process";
+        NoNewPrivileges = false;
       };
     };
 

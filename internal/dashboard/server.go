@@ -17,6 +17,12 @@ type Config struct {
 	Relay     string        // default relay shown in the UI
 	WebURL    string        // default browser UI base for deep links
 	KeepEnded time.Duration // how long ended sessions linger in the list
+
+	// Web-initiated session creation. Enabled only when both WorkspaceRoot is
+	// set and Create is non-nil. Create launches a new omp covibe session named
+	// `name` in directory `dir` (already validated + clamped to WorkspaceRoot).
+	WorkspaceRoot string
+	Create        func(name, dir string) error
 }
 
 // Server serves the OIDC-protected session dashboard.
@@ -48,7 +54,13 @@ func (s *Server) Handler() http.Handler {
 	// Protected endpoints.
 	protected := http.NewServeMux()
 	protected.HandleFunc("/", s.handleIndex)
-	protected.HandleFunc("/api/sessions", s.handleSessions)
+	protected.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			s.handleCreate(w, r)
+			return
+		}
+		s.handleSessions(w, r)
+	})
 	protected.HandleFunc("/qr", s.handleQR)
 	mux.Handle("/", s.cfg.Auth.Middleware(protected))
 
@@ -142,9 +154,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	id, _ := s.cfg.Auth.Current(r)
 	data := struct {
-		User  Identity
-		Relay string
-	}{User: id, Relay: s.cfg.Relay}
+		User      Identity
+		Relay     string
+		CanCreate bool
+	}{User: id, Relay: s.cfg.Relay, CanCreate: s.cfg.Create != nil && s.cfg.WorkspaceRoot != ""}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := indexTmpl.Execute(w, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
