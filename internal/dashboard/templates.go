@@ -1,0 +1,99 @@
+package dashboard
+
+import "html/template"
+
+var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>covibe — sessions</title>
+<style>
+  :root { color-scheme: dark light; --bg:#0e1116; --card:#171b22; --muted:#8b949e; --fg:#e6edf3; --accent:#4ea1ff; --live:#3fb950; --ended:#8b949e; --start:#d29922; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 system-ui,sans-serif; background:var(--bg); color:var(--fg); }
+  header { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:1rem 1.5rem; border-bottom:1px solid #222; }
+  header h1 { font-size:1.1rem; margin:0; letter-spacing:.02em; }
+  header .who { color:var(--muted); font-size:.85rem; }
+  header a { color:var(--accent); text-decoration:none; }
+  main { padding:1.5rem; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:1.25rem; }
+  .card { background:var(--card); border:1px solid #222; border-radius:12px; padding:1.1rem; display:flex; flex-direction:column; gap:.6rem; }
+  .card h2 { margin:0; font-size:1.05rem; display:flex; align-items:center; gap:.5rem; }
+  .dot { width:.6rem; height:.6rem; border-radius:50%; display:inline-block; }
+  .dot.live{background:var(--live)} .dot.starting{background:var(--start)} .dot.ended{background:var(--ended)}
+  .meta { color:var(--muted); font-size:.82rem; word-break:break-all; }
+  .badge { font-size:.7rem; padding:.1rem .45rem; border-radius:999px; border:1px solid #333; color:var(--muted); }
+  .qr { align-self:center; background:#fff; padding:8px; border-radius:8px; }
+  .qr img { display:block; width:200px; height:200px; image-rendering:pixelated; }
+  .link { display:flex; gap:.4rem; }
+  .link input { flex:1; background:#0b0e13; border:1px solid #2a2f37; color:var(--fg); border-radius:6px; padding:.4rem .5rem; font-family:ui-monospace,monospace; font-size:.78rem; }
+  button { background:#21262d; color:var(--fg); border:1px solid #30363d; border-radius:6px; padding:.4rem .6rem; cursor:pointer; font-size:.8rem; }
+  button:hover { border-color:var(--accent); }
+  a.open { color:var(--accent); text-decoration:none; font-size:.85rem; }
+  .empty { color:var(--muted); text-align:center; padding:3rem; }
+  .waiting { color:var(--start); font-size:.82rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>covibe · co-vibing sessions</h1>
+  <div>
+    {{if .Relay}}<span class="badge">relay {{.Relay}}</span>{{end}}
+    <span class="who">{{if .User.Email}}{{.User.Email}}{{else}}{{.User.Sub}}{{end}}</span>
+    <a href="/logout">sign out</a>
+  </div>
+</header>
+<main>
+  <div id="grid" class="grid"></div>
+  <div id="empty" class="empty" hidden>No live sessions. Start one with <code>covibe start &lt;name&gt;</code>.</div>
+</main>
+<script>
+const grid = document.getElementById('grid');
+const empty = document.getElementById('empty');
+
+function esc(s){ const d=document.createElement('div'); d.textContent=s??''; return d.innerHTML; }
+
+function card(s){
+  const el = document.createElement('div');
+  el.className = 'card';
+  const started = new Date(s.startedAt).toLocaleTimeString();
+  let body = '';
+  body += '<h2><span class="dot '+esc(s.status)+'"></span>'+esc(s.name||s.id)+
+          (s.viewOnly?' <span class="badge">view-only</span>':'')+'</h2>';
+  body += '<div class="meta">'+esc(s.dir||'')+'</div>';
+  body += '<div class="meta">'+(s.mux?esc(s.mux)+(s.muxSession?' · '+esc(s.muxSession):''):'')+
+          ' · since '+esc(started)+'</div>';
+  if (s.browserUrl){
+    body += '<div class="qr"><img alt="join QR" src="'+esc(s.qr)+'"></div>';
+    body += '<div class="link"><input readonly value="'+esc(s.browserUrl)+'">'+
+            '<button data-copy="'+esc(s.browserUrl)+'">copy</button></div>';
+    body += '<a class="open" href="'+esc(s.browserUrl)+'" target="_blank" rel="noopener">open in browser ↗</a>';
+    if (s.joinLink){
+      body += '<div class="link"><input readonly value="omp join &quot;'+esc(s.joinLink)+'&quot;">'+
+              '<button data-copy="'+esc(s.joinLink)+'">copy</button></div>';
+    }
+  } else {
+    body += '<div class="waiting">waiting for /collab link…</div>';
+  }
+  el.innerHTML = body;
+  el.querySelectorAll('button[data-copy]').forEach(b=>{
+    b.onclick = ()=>{ navigator.clipboard.writeText(b.dataset.copy); b.textContent='copied'; setTimeout(()=>b.textContent='copy',1200); };
+  });
+  return el;
+}
+
+async function refresh(){
+  try {
+    const res = await fetch('/api/sessions', {headers:{'Accept':'application/json'}});
+    if (res.status === 401){ location.href='/auth/login'; return; }
+    const sessions = await res.json();
+    grid.replaceChildren(...sessions.map(card));
+    empty.hidden = sessions.length > 0;
+  } catch(e){ /* transient; next tick retries */ }
+}
+refresh();
+setInterval(refresh, 4000);
+</script>
+</body>
+</html>`))

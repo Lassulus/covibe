@@ -1,0 +1,334 @@
+// Command covibe runs a co-vibing setup: it launches omp sessions inside a
+// terminal multiplexer, captures each session's /collab link, and serves an
+// OIDC-protected dashboard of live sessions with scannable QR codes.
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/lassulus/covibe/internal/dashboard"
+	"github.com/lassulus/covibe/internal/mux"
+	"github.com/lassulus/covibe/internal/session"
+	"github.com/lassulus/covibe/internal/spool"
+)
+
+var version = "dev"
+
+func main() {
+	if len(os.Args) < 2 {
+		usage()
+		os.Exit(2)
+	}
+	var err error
+	switch os.Args[1] {
+	case "session":
+		err = cmdSession(os.Args[2:])
+	case "start":
+		err = cmdStart(os.Args[2:])
+	case "list":
+		err = cmdList(os.Args[2:])
+	case "serve":
+		err = cmdServe(os.Args[2:])
+	case "version", "--version", "-v":
+		fmt.Println("covibe", version)
+	case "help", "-h", "--help":
+		usage()
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", os.Args[1])
+		usage()
+		os.Exit(2)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "covibe:", err)
+		os.Exit(1)
+	}
+}
+
+func usage() {
+	fmt.Fprint(os.Stderr, `covibe — co-vibing sessions for omp
+
+usage:
+  covibe start   <name> [flags]     open an omp session in a mux tab and share it
+  covibe session         [flags]    (internal) pty-proxy run by the mux; wraps omp
+  covibe list            [flags]    list live sessions
+  covibe serve           [flags]    run the OIDC-protected session dashboard
+  covibe version
+
+run 'covibe <command> -h' for flags.
+`)
+}
+
+// env returns the first non-empty of the environment variable or the fallback.
+func env(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// cmdSession is the pane process: proxy omp and capture its collab link.
+func cmdSession(args []string) error {
+	fs := flag.NewFlagSet("session", flag.ExitOnError)
+	id := fs.String("id", "", "stable session id (generated if empty)")
+	name := fs.String("name", "", "session display name")
+	dir := fs.String("dir", "", "working directory for omp")
+	omp := fs.String("omp", env("COVIBE_OMP", "omp"), "omp binary")
+	relay := fs.String("relay", env("COVIBE_RELAY", ""), "collab relay URL (inline /collab arg)")
+	web := fs.String("web", env("COVIBE_WEB_URL", ""), "browser UI base for deep links")
+	auto := fs.String("auto-collab", "full", "auto-start sharing: none|full|view")
+	muxName := fs.String("mux", env("COVIBE_MUX", ""), "multiplexer label (zellij|tmux)")
+	muxSession := fs.String("mux-session", env("COVIBE_MUX_SESSION", ""), "multiplexer session name")
+	stateDir := fs.String("state-dir", "", "spool directory")
+	_ = fs.Parse(args)
+
+	if *dir == "" {
+		if wd, err := os.Getwd(); err == nil {
+			*dir = wd
+		}
+	}
+	store, err := spool.Open(*stateDir)
+	if err != nil {
+		return err
+	}
+	return session.Run(session.Config{
+		ID:         *id,
+		Name:       orDefault(*name, "session"),
+		Dir:        *dir,
+		OmpBin:     *omp,
+		OmpArgs:    fs.Args(),
+		Relay:      *relay,
+		WebURL:     *web,
+		AutoCollab: normalizeAuto(*auto),
+		Mux:        *muxName,
+		MuxSession: *muxSession,
+		Store:      store,
+	})
+}
+
+// cmdStart asks the multiplexer to open a tab running covibe session.
+func cmdStart(args []string) error {
+	fs := flag.NewFlagSet("start", flag.ExitOnError)
+	name := fs.String("name", "", "session name (also positional)")
+	dir := fs.String("dir", "", "working directory (default: cwd)")
+	muxName := fs.String("mux", env("COVIBE_MUX", "zellij"), "multiplexer: zellij|tmux")
+	muxSession := fs.String("session", env("COVIBE_MUX_SESSION", "covibe"), "multiplexer session name")
+	relay := fs.String("relay", env("COVIBE_RELAY", ""), "collab relay URL")
+	web := fs.String("web", env("COVIBE_WEB_URL", ""), "browser UI base for deep links")
+	auto := fs.String("auto-collab", "full", "auto-start sharing: none|full|view")
+	omp := fs.String("omp", env("COVIBE_OMP", "omp"), "omp binary")
+	stateDir := fs.String("state-dir", "", "spool directory")
+	dryRun := fs.Bool("dry-run", false, "print the mux command instead of running it")
+	// Allow "covibe start <name> [flags]": pop a leading non-flag arg as the
+	// name so flags after it are still parsed (Go's flag stops at the first
+	// positional otherwise).
+	var posName string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		posName, args = args[0], args[1:]
+	}
+	_ = fs.Parse(args)
+	if *name == "" {
+		*name = posName
+	}
+	if *name == "" && fs.NArg() > 0 {
+		*name = fs.Arg(0)
+	}
+	if *name == "" {
+		return fmt.Errorf("session name required")
+	}
+	if *dir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		*dir = wd
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	launcher, err := mux.For(*muxName)
+	if err != nil {
+		return err
+	}
+
+	inner := []string{self, "session",
+		"--name", *name,
+		"--dir", *dir,
+		"--omp", *omp,
+		"--auto-collab", *auto,
+		"--mux", *muxName,
+		"--mux-session", *muxSession,
+	}
+	if *relay != "" {
+		inner = append(inner, "--relay", *relay)
+	}
+	if *web != "" {
+		inner = append(inner, "--web", *web)
+	}
+	if *stateDir != "" {
+		inner = append(inner, "--state-dir", *stateDir)
+	}
+
+	spec := mux.Spec{Name: *name, Dir: *dir, Session: *muxSession, InnerArgv: inner}
+	if *dryRun {
+		argv, err := launcher.Command(spec)
+		if err != nil {
+			return err
+		}
+		fmt.Println(strings.Join(argv, " "))
+		return nil
+	}
+	if err := launcher.Launch(spec); err != nil {
+		return err
+	}
+	fmt.Printf("started %q in %s session %q\n", *name, *muxName, *muxSession)
+	return nil
+}
+
+// cmdList prints the live sessions.
+func cmdList(args []string) error {
+	fs := flag.NewFlagSet("list", flag.ExitOnError)
+	stateDir := fs.String("state-dir", "", "spool directory")
+	asJSON := fs.Bool("json", false, "emit JSON")
+	_ = fs.Parse(args)
+
+	store, err := spool.Open(*stateDir)
+	if err != nil {
+		return err
+	}
+	recs, err := store.Live(30 * time.Second)
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		return json.NewEncoder(os.Stdout).Encode(recs)
+	}
+	if len(recs) == 0 {
+		fmt.Println("no live sessions")
+		return nil
+	}
+	for _, r := range recs {
+		link := r.JoinLink
+		if link == "" {
+			link = "(waiting for /collab)"
+		}
+		fmt.Printf("%-8s %-16s %-8s %s\n\t%s\n", r.Status, r.Name, r.Mux, r.Dir, link)
+	}
+	return nil
+}
+
+// cmdServe runs the dashboard.
+func cmdServe(args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	addr := fs.String("addr", env("COVIBE_ADDR", "127.0.0.1:8770"), "listen address")
+	stateDir := fs.String("state-dir", "", "spool directory")
+	relay := fs.String("relay", env("COVIBE_RELAY", ""), "default relay URL shown in UI")
+	web := fs.String("web", env("COVIBE_WEB_URL", ""), "browser UI base for deep links")
+	noAuth := fs.Bool("no-auth", os.Getenv("COVIBE_NO_AUTH") == "1", "disable OIDC (loopback dev only)")
+	insecure := fs.Bool("insecure", os.Getenv("COVIBE_INSECURE") == "1", "allow cookies over plain http")
+	issuer := fs.String("oidc-issuer", env("COVIBE_OIDC_ISSUER", ""), "OIDC issuer URL")
+	clientID := fs.String("oidc-client-id", env("COVIBE_OIDC_CLIENT_ID", ""), "OIDC client id")
+	clientSecret := fs.String("oidc-client-secret", env("COVIBE_OIDC_CLIENT_SECRET", ""), "OIDC client secret (optional for PKCE public clients)")
+	redirect := fs.String("oidc-redirect-url", env("COVIBE_OIDC_REDIRECT_URL", ""), "OIDC redirect URL (…/auth/callback)")
+	scopes := fs.String("oidc-scopes", env("COVIBE_OIDC_SCOPES", ""), "space-separated OIDC scopes")
+	allowEmails := fs.String("allow-emails", env("COVIBE_ALLOW_EMAILS", ""), "comma-separated allowed emails")
+	allowDomains := fs.String("allow-domains", env("COVIBE_ALLOW_DOMAINS", ""), "comma-separated allowed email domains")
+	allowSubs := fs.String("allow-subs", env("COVIBE_ALLOW_SUBS", ""), "comma-separated allowed subject ids")
+	_ = fs.Parse(args)
+
+	store, err := spool.Open(*stateDir)
+	if err != nil {
+		return err
+	}
+	auth, err := dashboard.NewAuthenticator(context.Background(), dashboard.OIDCConfig{
+		Issuer:         *issuer,
+		ClientID:       *clientID,
+		ClientSecret:   *clientSecret,
+		RedirectURL:    *redirect,
+		Scopes:         splitFields(*scopes),
+		AllowedEmails:  splitList(*allowEmails),
+		AllowedDomains: splitList(*allowDomains),
+		AllowedSubs:    splitList(*allowSubs),
+		CookieSecret:   []byte(os.Getenv("COVIBE_COOKIE_SECRET")),
+		Insecure:       *insecure || *noAuth,
+		NoAuth:         *noAuth,
+	})
+	if err != nil {
+		return err
+	}
+	srv := dashboard.NewServer(dashboard.Config{
+		Store:  store,
+		Auth:   auth,
+		Relay:  *relay,
+		WebURL: *web,
+	})
+
+	httpSrv := newHTTPServer(*addr, srv.Handler())
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		sctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = httpSrv.Shutdown(sctx)
+	}()
+
+	mode := "OIDC"
+	if *noAuth {
+		mode = "NO-AUTH (dev)"
+	}
+	fmt.Printf("covibe dashboard on http://%s  [%s]  spool=%s\n", *addr, mode, store.Dir())
+	if err := httpSrv.ListenAndServe(); err != nil && err.Error() != "http: Server closed" {
+		return err
+	}
+	return nil
+}
+
+func normalizeAuto(v string) string {
+	switch strings.ToLower(v) {
+	case "none", "off", "":
+		return ""
+	case "view", "read", "readonly":
+		return "view"
+	default:
+		return "full"
+	}
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func splitFields(s string) []string {
+	return strings.Fields(s)
+}
+
+func orDefault(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
+}
+
+func newHTTPServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+}

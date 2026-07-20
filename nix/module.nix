@@ -1,0 +1,271 @@
+self:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
+let
+  cfg = config.services.covibe;
+  d = cfg.dashboard;
+
+  # COVIBE_* environment shared by the dashboard service and — when
+  # installGlobally is set — every interactive `covibe start`/`session` so both
+  # sides agree on the spool directory, relay and multiplexer.
+  sharedEnv = lib.filterAttrs (_: v: v != null && v != "") {
+    COVIBE_STATE_DIR = cfg.stateDir;
+    COVIBE_RELAY = cfg.relay;
+    COVIBE_WEB_URL = cfg.webUrl;
+    COVIBE_MUX = cfg.mux;
+    OMP_AUTH_BROKER_URL = cfg.authBrokerUrl;
+  };
+
+  dashboardEnv =
+    sharedEnv
+    // {
+      COVIBE_ADDR = d.addr;
+      COVIBE_OIDC_ISSUER = d.oidc.issuer;
+      COVIBE_OIDC_CLIENT_ID = d.oidc.clientId;
+      COVIBE_OIDC_REDIRECT_URL = d.oidc.redirectUrl;
+      COVIBE_OIDC_SCOPES = lib.concatStringsSep " " d.oidc.scopes;
+      COVIBE_ALLOW_EMAILS = lib.concatStringsSep "," d.allow.emails;
+      COVIBE_ALLOW_DOMAINS = lib.concatStringsSep "," d.allow.domains;
+      COVIBE_ALLOW_SUBS = lib.concatStringsSep "," d.allow.subs;
+      COVIBE_NO_AUTH = if d.noAuth then "1" else "0";
+      COVIBE_INSECURE = if d.insecure then "1" else "0";
+    }
+    // d.extraSettings;
+in
+{
+  options.services.covibe = {
+    enable = lib.mkEnableOption "covibe co-vibing sessions";
+
+    package = lib.mkOption {
+      type = lib.types.package;
+      default = self.packages.${pkgs.stdenv.hostPlatform.system}.covibe;
+      defaultText = lib.literalExpression "covibe.packages.\${system}.covibe";
+      description = "The covibe package to use.";
+    };
+
+    user = lib.mkOption {
+      type = lib.types.str;
+      description = ''
+        Login user that hosts the omp sessions and runs the dashboard. The
+        dashboard must run as the same user that launches `covibe start` so it
+        can read and prune that user's session spool.
+      '';
+      example = "alice";
+    };
+
+    group = lib.mkOption {
+      type = lib.types.str;
+      default = "users";
+      description = "Group owning the spool directory.";
+    };
+
+    stateDir = lib.mkOption {
+      type = lib.types.str;
+      default = "/run/covibe";
+      description = "Session spool directory shared by session wrappers and the dashboard.";
+    };
+
+    relay = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      example = "wss://relay.example.com";
+      description = ''
+        Collab relay URL used for `/collab`. Sessions started through covibe
+        pass this inline so links point at your relay; empty uses omp's default
+        (wss://my.omp.sh). Point this at your self-hosted omp relay.
+      '';
+    };
+
+    webUrl = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      example = "https://collab.example.com";
+      description = "Browser UI base for collab deep links, when hosted separately from the relay.";
+    };
+
+    mux = lib.mkOption {
+      type = lib.types.enum [
+        "zellij"
+        "tmux"
+      ];
+      default = "zellij";
+      description = "Terminal multiplexer covibe launches sessions in.";
+    };
+
+    authBrokerUrl = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      example = "https://broker.example.com:8765";
+      description = ''
+        Optional omp auth-broker/gateway URL exported to launched sessions as
+        OMP_AUTH_BROKER_URL, so co-vibing omp instances resolve provider
+        credentials through the broker instead of holding local tokens.
+      '';
+    };
+
+    installGlobally = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Install covibe system-wide and export the shared COVIBE_* environment so
+        interactive `covibe start`/`session` use the same spool, relay and mux
+        as the dashboard.
+      '';
+    };
+
+    extraPackages = lib.mkOption {
+      type = lib.types.listOf lib.types.package;
+      default = [ (if cfg.mux == "tmux" then pkgs.tmux else pkgs.zellij) ];
+      defaultText = lib.literalExpression "[ pkgs.zellij ]";
+      description = "Extra packages (the multiplexer, etc.) to install alongside covibe.";
+    };
+
+    dashboard = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Run the covibe dashboard as a systemd service.";
+      };
+
+      addr = lib.mkOption {
+        type = lib.types.str;
+        default = "127.0.0.1:8770";
+        description = "Listen address for the dashboard.";
+      };
+
+      openFirewall = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Open the dashboard TCP port in the firewall.";
+      };
+
+      noAuth = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Disable OIDC entirely. Loopback/dev only — never expose this.";
+      };
+
+      insecure = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Allow session cookies over plain http (localhost/dev only).";
+      };
+
+      oidc = {
+        issuer = lib.mkOption {
+          type = lib.types.str;
+          default = "";
+          example = "https://auth.example.com/realms/main";
+          description = "OIDC issuer URL (discovery via /.well-known/openid-configuration).";
+        };
+        clientId = lib.mkOption {
+          type = lib.types.str;
+          default = "";
+          description = "OIDC client id.";
+        };
+        redirectUrl = lib.mkOption {
+          type = lib.types.str;
+          default = "";
+          example = "https://covibe.example.com/auth/callback";
+          description = "OIDC redirect URL; must resolve to the dashboard's /auth/callback.";
+        };
+        scopes = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [
+            "openid"
+            "profile"
+            "email"
+          ];
+          description = "OIDC scopes requested.";
+        };
+      };
+
+      allow = {
+        emails = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [ ];
+          description = "Allowed emails. Empty + empty domains/subs allows any authenticated user.";
+        };
+        domains = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [ ];
+          description = "Allowed email domains.";
+        };
+        subs = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [ ];
+          description = "Allowed OIDC subject ids.";
+        };
+      };
+
+      environmentFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = ''
+          systemd EnvironmentFile with secrets, e.g.
+          COVIBE_OIDC_CLIENT_SECRET=... and COVIBE_COOKIE_SECRET=... . The cookie
+          secret keeps sessions valid across restarts; set it in production.
+        '';
+      };
+
+      extraSettings = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = { };
+        description = "Extra COVIBE_* environment variables for the dashboard.";
+      };
+    };
+  };
+
+  config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion =
+          cfg.dashboard.enable
+          -> (d.noAuth || (d.oidc.issuer != "" && d.oidc.clientId != "" && d.oidc.redirectUrl != ""));
+        message = "services.covibe.dashboard: set dashboard.oidc.{issuer,clientId,redirectUrl} or dashboard.noAuth = true.";
+      }
+    ];
+
+    environment.systemPackages = lib.mkIf cfg.installGlobally ([ cfg.package ] ++ cfg.extraPackages);
+    environment.variables = lib.mkIf cfg.installGlobally sharedEnv;
+
+    systemd.tmpfiles.rules = [
+      "d ${cfg.stateDir} 0700 ${cfg.user} ${cfg.group} -"
+    ];
+
+    systemd.services.covibe-dashboard = lib.mkIf cfg.dashboard.enable {
+      description = "covibe co-vibing session dashboard";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
+      environment = dashboardEnv;
+      serviceConfig = {
+        ExecStart = "${lib.getExe cfg.package} serve";
+        User = cfg.user;
+        Group = cfg.group;
+        Restart = "on-failure";
+        RestartSec = 2;
+        EnvironmentFile = lib.mkIf (d.environmentFile != null) [ d.environmentFile ];
+        # Hardening.
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = "read-only";
+        ReadWritePaths = [ cfg.stateDir ];
+        PrivateTmp = true;
+        ProtectKernelTunables = true;
+        ProtectControlGroups = true;
+        RestrictNamespaces = true;
+        RestrictSUIDSGID = true;
+        LockPersonality = true;
+      };
+    };
+
+    networking.firewall.allowedTCPPorts = lib.mkIf (cfg.dashboard.enable && d.openFirewall) [
+      (lib.toInt (lib.last (lib.splitString ":" d.addr)))
+    ];
+  };
+}

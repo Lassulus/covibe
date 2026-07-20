@@ -1,0 +1,58 @@
+{
+  description = "covibe — co-vibing sessions for omp: launch omp in a mux, capture /collab links, serve an OIDC-protected QR dashboard";
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-utils.url = "github:numtide/flake-utils";
+  };
+
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+    }:
+    let
+      systemOutputs = flake-utils.lib.eachDefaultSystem (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          covibe = pkgs.callPackage ./nix/package.nix {
+            version = self.shortRev or self.dirtyShortRev or "dev";
+          };
+        in
+        {
+          packages = {
+            default = covibe;
+            covibe = covibe;
+          };
+
+          apps.default = {
+            type = "app";
+            program = "${covibe}/bin/covibe";
+          };
+
+          devShells.default = pkgs.mkShell {
+            packages = [
+              pkgs.go
+              pkgs.gopls
+              pkgs.go-tools
+              pkgs.zellij
+              pkgs.tmux
+            ];
+          };
+
+          checks.covibe = covibe;
+        }
+      );
+    in
+    systemOutputs
+    // {
+      nixosModules.default = import ./nix/module.nix self;
+      nixosModules.covibe = self.nixosModules.default;
+
+      overlays.default = final: _prev: {
+        covibe = final.callPackage ./nix/package.nix { };
+      };
+    };
+}
