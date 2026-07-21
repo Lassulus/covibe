@@ -205,7 +205,9 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		http.Redirect(w, r, "/auth/login?next="+sanitizeNext(r.URL.RequestURI()), http.StatusFound)
+		// Redirect target is a literal same-origin path; the next param is
+		// clamped to a rooted, host-less path by sanitizeNext (see TestSanitizeNext).
+		http.Redirect(w, r, "/auth/login?next="+sanitizeNext(r.URL.RequestURI()), http.StatusFound) // #nosec G710
 	})
 }
 
@@ -255,7 +257,8 @@ func (a *Authenticator) allowed(sub, email string) bool {
 func (a *Authenticator) setSigned(w http.ResponseWriter, name string, v any, ttl time.Duration) {
 	payload, _ := json.Marshal(v)
 	value := sign(a.secret, payload)
-	http.SetCookie(w, &http.Cookie{
+	// Secure is set unless Insecure (localhost dev only); HttpOnly + SameSite always set.
+	http.SetCookie(w, &http.Cookie{ // #nosec G124
 		Name:     name,
 		Value:    value,
 		Path:     "/",
@@ -280,7 +283,7 @@ func (a *Authenticator) getSigned(r *http.Request, name string, v any) bool {
 }
 
 func (a *Authenticator) clearCookie(w http.ResponseWriter, name string) {
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ // #nosec G124 -- deletion cookie; Secure unless Insecure dev, HttpOnly+SameSite set
 		Name:     name,
 		Value:    "",
 		Path:     "/",
@@ -334,11 +337,21 @@ func wantsJSON(r *http.Request) bool {
 }
 
 // sanitizeNext keeps only same-origin absolute paths to avoid open redirects.
+// It must start with a single "/" and carry no host: reject "//host",
+// backslashes (browsers normalize "/\" to "//" → protocol-relative), and their
+// percent-encoded forms.
 func sanitizeNext(next string) string {
-	if strings.HasPrefix(next, "/") && !strings.HasPrefix(next, "//") {
-		return next
+	if next == "" || !strings.HasPrefix(next, "/") {
+		return "/"
 	}
-	return "/"
+	lower := strings.ToLower(next)
+	if strings.HasPrefix(next, "//") ||
+		strings.ContainsRune(next, '\\') ||
+		strings.Contains(lower, "%5c") || // encoded backslash
+		strings.HasPrefix(lower, "/%2f") { // encoded "//"
+		return "/"
+	}
+	return next
 }
 
 func orDefault(s, def string) string {

@@ -30,6 +30,7 @@ let
     // lib.filterAttrs (_: v: v != null && v != "") {
       COVIBE_ADDR = d.addr;
       COVIBE_WORKSPACE = d.workspaceRoot;
+      COVIBE_MAX_SESSIONS = toString d.maxSessions;
       COVIBE_OMP = cfg.omp;
       COVIBE_API_KEYS_FILE = d.apiKeysFile;
       COVIBE_OIDC_ISSUER = d.oidc.issuer;
@@ -188,6 +189,12 @@ in
           subdir) and launches an omp covibe session there. Empty disables
           creation from the web UI.
         '';
+      };
+
+      maxSessions = lib.mkOption {
+        type = lib.types.int;
+        default = 32;
+        description = "Cap on concurrent live sessions creatable via the API/UI; 0 disables the cap.";
       };
 
       openFirewall = lib.mkOption {

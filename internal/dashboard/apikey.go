@@ -26,7 +26,7 @@ func LoadAPIKeys(inline string, files ...string) (APIKeys, error) {
 		if f == "" {
 			continue
 		}
-		data, err := os.ReadFile(f)
+		data, err := os.ReadFile(f) // #nosec G304 -- f is an operator-provided config path, not user input
 		if err != nil {
 			return ks, err
 		}

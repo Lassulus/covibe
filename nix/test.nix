@@ -76,8 +76,14 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_unit("covibe-dashboard.service")
     machine.wait_for_open_port(8770)
 
-    # Liveness (public, no key).
+    # Liveness (public, no key) + security headers on every response.
     machine.succeed("curl -sf http://127.0.0.1:8770/healthz")
+    headers = machine.succeed("curl -sfi http://127.0.0.1:8770/healthz")
+    assert "x-content-type-options: nosniff" in headers.lower(), headers
+    assert "x-frame-options: deny" in headers.lower(), headers
+    # The HTML dashboard carries a nonce-based CSP.
+    idx = machine.succeed("curl -sfi http://127.0.0.1:8770/")
+    assert "content-security-policy: default-src 'self'; script-src 'nonce-" in idx.lower(), idx
 
     # (API-key gating — 401 without/with a wrong key — is covered by the unit
     # test TestV1AuthGating; here noAuth is on so the browser flow works too.)

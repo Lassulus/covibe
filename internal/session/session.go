@@ -119,7 +119,7 @@ func Run(cfg Config) error {
 		_ = cfg.Store.Save(rec)
 	}()
 
-	cmd := exec.Command(cfg.OmpBin, cfg.OmpArgs...)
+	cmd := exec.Command(cfg.OmpBin, cfg.OmpArgs...) // #nosec G204 -- omp binary is operator-configured; launched with no shell
 	cmd.Dir = cfg.Dir
 	cmd.Env = os.Environ()
 

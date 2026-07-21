@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -71,6 +72,16 @@ run 'covibe <command> -h' for flags.
 func env(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+// envInt reads an int environment variable, falling back on unset/invalid.
+func envInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return fallback
 }
@@ -232,6 +243,7 @@ func cmdServe(args []string) error {
 	ompBin := fs.String("omp", env("COVIBE_OMP", "omp"), "omp binary for created sessions")
 	apiKeys := fs.String("api-keys", env("COVIBE_API_KEYS", ""), "comma/space-separated API keys for the /api/v1 REST surface")
 	apiKeysFile := fs.String("api-keys-file", env("COVIBE_API_KEYS_FILE", ""), "file of API keys (one per line, # comments) for /api/v1")
+	maxSessions := fs.Int("max-sessions", envInt("COVIBE_MAX_SESSIONS", 0), "cap on concurrent live sessions (0 = unlimited)")
 	_ = fs.Parse(args)
 
 	store, err := spool.Open(*stateDir)
@@ -265,6 +277,7 @@ func cmdServe(args []string) error {
 		WebURL:        *web,
 		WorkspaceRoot: *workspace,
 		APIKeys:       keys,
+		MaxSessions:   *maxSessions,
 	}
 	if *workspace != "" {
 		cfg.Create = func(id, name, dir string) error {

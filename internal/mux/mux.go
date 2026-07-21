@@ -46,7 +46,7 @@ func run(argv []string) error {
 	if len(argv) == 0 {
 		return fmt.Errorf("empty command")
 	}
-	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd := exec.Command(argv[0], argv[1:]...) // #nosec G204 -- argv built from validated name + operator config; no shell
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s: %w: %s", argv[0], err, out)
@@ -153,5 +153,5 @@ func (t tmux) Launch(s Spec) error {
 }
 
 func tmuxHasSession(name string) bool {
-	return exec.Command("tmux", "has-session", "-t", "="+name).Run() == nil
+	return exec.Command("tmux", "has-session", "-t", "="+name).Run() == nil // #nosec G204 -- fixed argv; session name only, no shell
 }

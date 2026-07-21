@@ -117,11 +117,11 @@ func (s *Store) Save(r *Record) error {
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
@@ -193,11 +193,11 @@ func (s *Store) Live(keepEnded time.Duration) ([]Record, error) {
 	var out []Record
 	for _, r := range all {
 		if !r.Alive() {
-			s.Remove(r.ID)
+			_ = s.Remove(r.ID)
 			continue
 		}
 		if r.Status == StatusEnded && time.Since(r.UpdatedAt) > keepEnded {
-			s.Remove(r.ID)
+			_ = s.Remove(r.ID)
 			continue
 		}
 		out = append(out, r)

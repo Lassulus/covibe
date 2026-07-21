@@ -91,6 +91,12 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if s.cfg.MaxSessions > 0 {
+		if live, _ := s.cfg.Store.Live(s.cfg.KeepEnded); len(live) >= s.cfg.MaxSessions {
+			http.Error(w, "session limit reached", http.StatusTooManyRequests)
+			return
+		}
+	}
 	dir, err := resolveWorkspaceDir(s.cfg.WorkspaceRoot, req.Name, req.Dir)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)

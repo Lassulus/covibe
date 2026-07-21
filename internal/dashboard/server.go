@@ -23,6 +23,9 @@ type Config struct {
 	// WorkspaceRoot). The id lets callers immediately GET the new session.
 	WorkspaceRoot string
 	Create        func(id, name, dir string) error
+	// MaxSessions caps concurrent live sessions creatable through the API/UI;
+	// 0 means unlimited.
+	MaxSessions int
 
 	// APIKeys authorizes the machine-facing /api/v1 surface. Empty means no key
 	// is accepted there (only a logged-in browser session is).
@@ -31,7 +34,8 @@ type Config struct {
 
 // Server serves the OIDC-protected session dashboard.
 type Server struct {
-	cfg Config
+	cfg   Config
+	fails *failLimiter
 }
 
 // NewServer builds the dashboard server.
@@ -39,7 +43,8 @@ func NewServer(cfg Config) *Server {
 	if cfg.KeepEnded == 0 {
 		cfg.KeepEnded = 20 * time.Second
 	}
-	return &Server{cfg: cfg}
+	// Throttle a client after 10 failed auth attempts per minute.
+	return &Server{cfg: cfg, fails: newFailLimiter(10, time.Minute)}
 }
 
 // Handler returns the fully wired http.Handler (auth + routes).
@@ -68,12 +73,31 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("/qr", s.handleQR)
 	mux.Handle("/", s.cfg.Auth.Middleware(protected))
 
-	return mux
+	return securityHeaders(mux)
 }
 
-// requireAPI gates a handler on a valid API key or an authenticated session.
+// securityHeaders sets conservative headers on every response. The strict CSP
+// (with a per-request nonce) is added by the HTML handler; here we set the
+// transport-agnostic defenses.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requireAPI gates a handler on a valid API key or an authenticated session,
+// throttling clients that keep failing.
 func (s *Server) requireAPI(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ip := clientIP(r)
+		if s.fails.blocked(ip) {
+			http.Error(w, "too many failed attempts", http.StatusTooManyRequests)
+			return
+		}
 		if s.cfg.APIKeys.Valid(bearerToken(r)) {
 			next(w, r)
 			return
@@ -82,6 +106,7 @@ func (s *Server) requireAPI(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
+		s.fails.fail(ip)
 		w.Header().Set("WWW-Authenticate", `Bearer realm="covibe"`)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	}
@@ -219,7 +244,7 @@ func (s *Server) handleQR(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write(png)
+	_, _ = w.Write(png) // #nosec G705 -- QR PNG served as image/png with nosniff; not HTML
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -228,12 +253,18 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, _ := s.cfg.Auth.Current(r)
+	nonce := randToken()
 	data := struct {
 		User      Identity
 		Relay     string
 		CanCreate bool
-	}{User: id, Relay: s.cfg.Relay, CanCreate: s.cfg.Create != nil && s.cfg.WorkspaceRoot != ""}
+		Nonce     string
+	}{User: id, Relay: s.cfg.Relay, CanCreate: s.cfg.Create != nil && s.cfg.WorkspaceRoot != "", Nonce: nonce}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'self'; script-src 'nonce-"+nonce+"'; style-src 'nonce-"+nonce+"'; "+
+			"img-src 'self' data:; connect-src 'self'; base-uri 'none'; "+
+			"frame-ancestors 'none'; object-src 'none'; form-action 'self'")
 	if err := indexTmpl.Execute(w, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}

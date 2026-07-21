@@ -8,7 +8,7 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>covibe — sessions</title>
-<style>
+<style nonce="{{.Nonce}}">
   :root { color-scheme: dark light; --bg:#0e1116; --card:#171b22; --muted:#8b949e; --fg:#e6edf3; --accent:#4ea1ff; --live:#3fb950; --ended:#8b949e; --start:#d29922; }
   * { box-sizing: border-box; }
   body { margin:0; font:15px/1.5 system-ui,sans-serif; background:var(--bg); color:var(--fg); }
@@ -70,15 +70,16 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
 </main>
 <div id="panemodal" class="modal" hidden>
   <div class="modalbox">
-    <div class="modalhead"><strong id="panetitle"></strong><button onclick="document.getElementById('panemodal').hidden=true">close</button></div>
+    <div class="modalhead"><strong id="panetitle"></strong><button id="paneclose">close</button></div>
     <pre id="panepre" class="pane-out"></pre>
   </div>
 </div>
-<script>
+<script nonce="{{.Nonce}}">
 const grid = document.getElementById('grid');
 const empty = document.getElementById('empty');
+document.getElementById('paneclose').onclick = ()=>{ document.getElementById('panemodal').hidden = true; };
 
-function esc(s){ const d=document.createElement('div'); d.textContent=s??''; return d.innerHTML; }
+function esc(s){ return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 function card(s){
   const el = document.createElement('div');
