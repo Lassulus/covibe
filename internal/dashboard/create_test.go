@@ -71,21 +71,24 @@ func TestHandleCreateDisabled(t *testing.T) {
 
 func TestHandleCreateLaunches(t *testing.T) {
 	dir := t.TempDir()
-	var gotName, gotDir string
+	var gotID, gotName, gotDir string
 	s := NewServer(Config{
 		Auth:          testAuth(OIDCConfig{NoAuth: true}),
 		WorkspaceRoot: dir,
-		Create: func(name, d string) error {
-			gotName, gotDir = name, d
+		Create: func(id, name, d string) error {
+			gotID, gotName, gotDir = id, name, d
 			return nil
 		},
 	})
-	req := httptest.NewRequest("POST", "/api/sessions", strings.NewReader(`{"name":"demo"}`))
+	req := httptest.NewRequest("POST", "/api/v1/sessions", strings.NewReader(`{"name":"demo"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	s.handleCreate(rec, req)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("got %d want 201; body=%s", rec.Code, rec.Body.String())
+	}
+	if gotID == "" {
+		t.Fatal("create should mint an id and pass it to the launcher")
 	}
 	if gotName != "demo" || gotDir != filepath.Join(dir, "demo") {
 		t.Fatalf("launcher got name=%q dir=%q", gotName, gotDir)
@@ -101,9 +104,9 @@ func TestHandleCreateRejectsBadName(t *testing.T) {
 	s := NewServer(Config{
 		Auth:          testAuth(OIDCConfig{NoAuth: true}),
 		WorkspaceRoot: dir,
-		Create:        func(_, _ string) error { called = true; return nil },
+		Create:        func(_, _, _ string) error { called = true; return nil },
 	})
-	req := httptest.NewRequest("POST", "/api/sessions", strings.NewReader(`{"name":"../evil"}`))
+	req := httptest.NewRequest("POST", "/api/v1/sessions", strings.NewReader(`{"name":"../evil"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	s.handleCreate(rec, req)

@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -152,6 +153,13 @@ func Run(cfg Config) error {
 		_ = cfg.Store.Save(rec)
 	})
 
+	// Always-on ring of recent output, served to the dashboard's pane endpoint
+	// over a per-session unix socket.
+	pane := &paneBuffer{max: 64 << 10}
+	if closePane, err := servePane(cfg.Store.PanePath(cfg.ID), pane); err == nil {
+		defer closePane()
+	}
+
 	// stdin → omp
 	go func() { _, _ = io.Copy(ptmx, os.Stdin) }()
 
@@ -160,10 +168,62 @@ func Run(cfg Config) error {
 		go autoCollab(ptmx, cfg)
 	}
 
-	// omp → stdout, tapped by the link sink.
-	_, _ = io.Copy(io.MultiWriter(os.Stdout, sink), ptmx)
+	// omp → stdout, tapped by the link sink and the pane ring.
+	_, _ = io.Copy(io.MultiWriter(os.Stdout, sink, pane), ptmx)
 
 	return cmd.Wait()
+}
+
+// paneBuffer keeps the most recent terminal output for on-demand snapshots.
+type paneBuffer struct {
+	mu  sync.Mutex
+	buf []byte
+	max int
+}
+
+func (p *paneBuffer) Write(b []byte) (int, error) {
+	p.mu.Lock()
+	p.buf = append(p.buf, b...)
+	if len(p.buf) > p.max {
+		p.buf = p.buf[len(p.buf)-p.max:]
+	}
+	p.mu.Unlock()
+	return len(b), nil
+}
+
+func (p *paneBuffer) snapshot() []byte {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]byte, len(p.buf))
+	copy(out, p.buf)
+	return out
+}
+
+// servePane listens on a unix socket and writes the current pane snapshot to
+// each connection. Returns a closer that stops the listener and removes the
+// socket file.
+func servePane(sockPath string, pane *paneBuffer) (func(), error) {
+	_ = os.Remove(sockPath)
+	l, err := net.Listen("unix", sockPath)
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				_, _ = conn.Write(pane.snapshot())
+			}()
+		}
+	}()
+	return func() {
+		_ = l.Close()
+		_ = os.Remove(sockPath)
+	}, nil
 }
 
 // autoCollab types the /collab command into omp after a short settle delay so a

@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -98,11 +100,18 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "create workspace dir: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := s.cfg.Create(req.Name, dir); err != nil {
+	id := newSessionID()
+	if err := s.cfg.Create(id, req.Name, dir); err != nil {
 		http.Error(w, "launch failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(map[string]string{"name": req.Name, "dir": dir})
+	writeJSON(w, http.StatusCreated, map[string]string{"id": id, "name": req.Name, "dir": dir})
+}
+
+// newSessionID mints a spool id for a session created through the API, so the
+// caller can immediately GET /api/v1/sessions/<id>.
+func newSessionID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return "covibe-" + hex.EncodeToString(b)
 }

@@ -230,6 +230,8 @@ func cmdServe(args []string) error {
 	muxName := fs.String("mux", env("COVIBE_MUX", "zellij"), "multiplexer for created sessions: zellij|tmux")
 	muxSession := fs.String("mux-session", env("COVIBE_MUX_SESSION", "covibe"), "multiplexer session name for created sessions")
 	ompBin := fs.String("omp", env("COVIBE_OMP", "omp"), "omp binary for created sessions")
+	apiKeys := fs.String("api-keys", env("COVIBE_API_KEYS", ""), "comma/space-separated API keys for the /api/v1 REST surface")
+	apiKeysFile := fs.String("api-keys-file", env("COVIBE_API_KEYS_FILE", ""), "file of API keys (one per line, # comments) for /api/v1")
 	_ = fs.Parse(args)
 
 	store, err := spool.Open(*stateDir)
@@ -252,16 +254,22 @@ func cmdServe(args []string) error {
 	if err != nil {
 		return err
 	}
+	keys, err := dashboard.LoadAPIKeys(*apiKeys, *apiKeysFile)
+	if err != nil {
+		return err
+	}
 	cfg := dashboard.Config{
 		Store:         store,
 		Auth:          auth,
 		Relay:         *relay,
 		WebURL:        *web,
 		WorkspaceRoot: *workspace,
+		APIKeys:       keys,
 	}
 	if *workspace != "" {
-		cfg.Create = func(name, dir string) error {
+		cfg.Create = func(id, name, dir string) error {
 			return launch.Launch(launch.Options{
+				ID:         id,
 				Name:       name,
 				Dir:        dir,
 				Mux:        *muxName,

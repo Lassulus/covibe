@@ -25,7 +25,16 @@ var (
 	fragRe = regexp.MustCompile(`[A-Za-z0-9.:-]+(?:/[A-Za-z0-9._~/-]*)?/#([A-Za-z0-9_-]{8,}[.#][A-Za-z0-9_-]{20,})`)
 	// ANSI CSI sequences (colour, cursor moves) — stripped before text search.
 	ansiRe = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+	// OSC sequences (e.g. the OSC-8 hyperlink), terminated by BEL or ST.
+	oscRe = regexp.MustCompile("\x1b\\][^\x07\x1b]*(?:\x07|\x1b\\\\)")
 )
+
+// StripANSI removes OSC and CSI escape sequences, yielding readable plain text
+// (used for pane snapshots).
+func StripANSI(b []byte) []byte {
+	b = oscRe.ReplaceAll(b, nil)
+	return ansiRe.ReplaceAll(b, nil)
+}
 
 // Extract scans raw terminal bytes for a collab join link. It returns the
 // canonical "<roomId>.<key>" (dot-joined) form and whether one was found.

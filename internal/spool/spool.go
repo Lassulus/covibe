@@ -95,6 +95,11 @@ func (s *Store) path(id string) string {
 	return filepath.Join(s.dir, id+".json")
 }
 
+// PanePath is the unix socket a session wrapper serves its terminal snapshot on.
+func (s *Store) PanePath(id string) string {
+	return filepath.Join(s.dir, id+".sock")
+}
+
 // Save atomically writes a record, stamping UpdatedAt.
 func (s *Store) Save(r *Record) error {
 	if r.ID == "" {

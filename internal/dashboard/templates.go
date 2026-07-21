@@ -38,6 +38,12 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
   .newform input#newname { min-width:220px; }
   .newform input#newdir { min-width:160px; }
   .newerr { color:#f85149; font-size:.8rem; }
+  .actions { margin-top:.2rem; }
+  .actions .pane { font-size:.78rem; }
+  .modal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; padding:1.5rem; z-index:10; }
+  .modalbox { background:var(--card); border:1px solid #30363d; border-radius:10px; width:min(900px,100%); max-height:85vh; display:flex; flex-direction:column; }
+  .modalhead { display:flex; justify-content:space-between; align-items:center; padding:.7rem 1rem; border-bottom:1px solid #30363d; }
+  .pane-out { margin:0; padding:1rem; overflow:auto; font-family:ui-monospace,monospace; font-size:.78rem; white-space:pre-wrap; word-break:break-word; }
 </style>
 </head>
 <body>
@@ -62,6 +68,12 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
   <div id="grid" class="grid"></div>
   <div id="empty" class="empty" hidden>No live sessions.{{if not .CanCreate}} Start one with <code>covibe start &lt;name&gt;</code>.{{end}}</div>
 </main>
+<div id="panemodal" class="modal" hidden>
+  <div class="modalbox">
+    <div class="modalhead"><strong id="panetitle"></strong><button onclick="document.getElementById('panemodal').hidden=true">close</button></div>
+    <pre id="panepre" class="pane-out"></pre>
+  </div>
+</div>
 <script>
 const grid = document.getElementById('grid');
 const empty = document.getElementById('empty');
@@ -90,16 +102,30 @@ function card(s){
   } else {
     body += '<div class="waiting">waiting for /collab link…</div>';
   }
+  body += '<div class="actions"><button class="pane" data-pane="'+esc(s.id)+'">view pane</button></div>';
   el.innerHTML = body;
   el.querySelectorAll('button[data-copy]').forEach(b=>{
     b.onclick = ()=>{ navigator.clipboard.writeText(b.dataset.copy); b.textContent='copied'; setTimeout(()=>b.textContent='copy',1200); };
   });
+  el.querySelector('button[data-pane]').onclick = ()=>showPane(s.id, s.name||s.id);
   return el;
+}
+
+async function showPane(id, name){
+  const modal = document.getElementById('panemodal');
+  const pre = document.getElementById('panepre');
+  document.getElementById('panetitle').textContent = name;
+  pre.textContent = 'loading…';
+  modal.hidden = false;
+  try {
+    const res = await fetch('/api/v1/sessions/'+encodeURIComponent(id)+'/pane?strip=1', {headers:{'Accept':'text/plain'}});
+    pre.textContent = res.ok ? (await res.text()) : ('pane unavailable ('+res.status+')');
+  } catch(e){ pre.textContent = String(e); }
 }
 
 async function refresh(){
   try {
-    const res = await fetch('/api/sessions', {headers:{'Accept':'application/json'}});
+    const res = await fetch('/api/v1/sessions', {headers:{'Accept':'application/json'}});
     if (res.status === 401){ location.href='/auth/login'; return; }
     const sessions = await res.json();
     grid.replaceChildren(...sessions.map(card));
@@ -116,7 +142,7 @@ if (form){
     err.textContent = '';
     btn.disabled = true;
     try {
-      const res = await fetch('/api/sessions', {
+      const res = await fetch('/api/v1/sessions', {
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body: JSON.stringify({

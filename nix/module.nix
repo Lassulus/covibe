@@ -31,6 +31,7 @@ let
       COVIBE_ADDR = d.addr;
       COVIBE_WORKSPACE = d.workspaceRoot;
       COVIBE_OMP = cfg.omp;
+      COVIBE_API_KEYS_FILE = d.apiKeysFile;
       COVIBE_OIDC_ISSUER = d.oidc.issuer;
       COVIBE_OIDC_CLIENT_ID = d.oidc.clientId;
       COVIBE_OIDC_REDIRECT_URL = d.oidc.redirectUrl;
@@ -252,6 +253,16 @@ in
           default = [ ];
           description = "Allowed OIDC subject ids.";
         };
+      };
+
+      apiKeysFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = ''
+          File of API keys (one per line, `#` comments, optional `label:` prefix)
+          authorizing the machine-facing /api/v1 REST surface. Inline keys can
+          also be supplied as COVIBE_API_KEYS via environmentFile.
+        '';
       };
 
       environmentFile = lib.mkOption {
