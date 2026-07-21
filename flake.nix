@@ -42,7 +42,12 @@
             ];
           };
 
-          checks.covibe = covibe;
+          checks = {
+            covibe = covibe;
+          }
+          // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+            integration = import ./nix/test.nix { inherit pkgs self; };
+          };
         }
       );
     in
