@@ -16,6 +16,7 @@ type Config struct {
 	Auth      *Authenticator
 	RelayHost string        // public host for guest collab links, e.g. "covibe.lassul.us"
 	WebClient string        // collab-web client base for browser links, e.g. "https://my.omp.sh"
+	WebRoot   string        // dir of collab-web static assets served at /c/ (self-hosted client); empty uses WebClient (e.g. my.omp.sh)
 	KeepEnded time.Duration // how long ended sessions linger in the list
 	// Web/API-initiated session creation. Enabled only when both WorkspaceRoot
 	// is set and Create is non-nil. Create launches a new omp covibe session
@@ -73,6 +74,12 @@ func (s *Server) Handler() http.Handler {
 	// auth — possession of the room key (in the link fragment) is the trust
 	// boundary, exactly like omp's public relay.
 	mux.HandleFunc("/r/{roomId}", s.relay.ServeRelay)
+
+	// Self-hosted collab-web client (static SPA) at /c/. Public: the client is
+	// content-blind and the room key rides only in the URL fragment.
+	if s.cfg.WebRoot != "" {
+		mux.Handle("/c/", http.StripPrefix("/c/", http.FileServer(http.Dir(s.cfg.WebRoot))))
+	}
 
 	// Browser endpoints, gated by OIDC (redirects to login).
 	protected := http.NewServeMux()

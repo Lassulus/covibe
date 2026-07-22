@@ -246,9 +246,13 @@ func cmdServe(args []string) error {
 	apiKeysFile := fs.String("api-keys-file", env("COVIBE_API_KEYS_FILE", ""), "file of API keys (one per line, # comments) for /api/v1")
 	maxSessions := fs.Int("max-sessions", envInt("COVIBE_MAX_SESSIONS", 0), "cap on concurrent live sessions (0 = unlimited)")
 	localRelay := fs.String("local-relay", env("COVIBE_LOCAL_RELAY", ""), "ws(s):// relay base the omp host connects to (default ws://<addr>)")
+	webRoot := fs.String("web-root", env("COVIBE_WEB_ROOT", ""), "dir of collab-web static assets served at /c/ (self-hosted client)")
 	_ = fs.Parse(args)
 	if *localRelay == "" {
 		*localRelay = "ws://" + *addr
+	}
+	if *webRoot != "" && *webClient == "https://my.omp.sh" && *relayHost != "" {
+		*webClient = "https://" + *relayHost + "/c"
 	}
 
 	store, err := spool.Open(*stateDir)
@@ -280,6 +284,7 @@ func cmdServe(args []string) error {
 		Auth:          auth,
 		RelayHost:     *relayHost,
 		WebClient:     *webClient,
+		WebRoot:       *webRoot,
 		WorkspaceRoot: *workspace,
 		APIKeys:       keys,
 		MaxSessions:   *maxSessions,

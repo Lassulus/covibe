@@ -12,6 +12,13 @@ let
   # server's PATH — a pre-existing zellij/tmux server started before a deploy
   # otherwise resolves "omp" to the old binary, which ignores OMP_COLLAB_*.
   ompBin = if cfg.ompPackage != null then "${cfg.ompPackage}/bin/omp" else cfg.omp;
+  # When a self-hosted collab-web root is set, browser links point at covibe's
+  # own /c/ instead of the default my.omp.sh client.
+  webClientUrl =
+    if cfg.webRoot != "" && cfg.webClient == "https://my.omp.sh" && cfg.relayHost != "" then
+      "https://${cfg.relayHost}/c"
+    else
+      cfg.webClient;
 
   # COVIBE_* environment shared by the dashboard service and — when
   # installGlobally is set — every interactive `covibe start`/`session` so both
@@ -19,8 +26,9 @@ let
   sharedEnv = lib.filterAttrs (_: v: v != null && v != "") {
     COVIBE_STATE_DIR = cfg.stateDir;
     COVIBE_OMP = ompBin;
+    COVIBE_WEB_ROOT = cfg.webRoot;
     COVIBE_RELAY_HOST = cfg.relayHost;
-    COVIBE_WEB_CLIENT = cfg.webClient;
+    COVIBE_WEB_CLIENT = webClientUrl;
     COVIBE_LOCAL_RELAY = "ws://" + d.addr;
     COVIBE_MUX = cfg.mux;
     COVIBE_MUX_SESSION = cfg.muxSession;
@@ -106,6 +114,18 @@ in
         <webClient>/#<relayHost>/r/<room>.<key>. Defaults to omp's hosted
         client (content-blind; the room key stays in the URL fragment). Point
         at a self-hosted collab-web build to drop the external dependency.
+      '';
+    };
+
+    webRoot = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      example = "/nix/store/…-omp/share/collab-web";
+      description = ''
+        Directory of a built collab-web static SPA (base path /c/) to self-host
+        at <host>/c/. When set, browser links default to https://<relayHost>/c
+        and nothing loads from my.omp.sh. Typically the collab-web output of the
+        patched omp package.
       '';
     };
 
