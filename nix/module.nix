@@ -14,9 +14,9 @@ let
   # sides agree on the spool directory, relay and multiplexer.
   sharedEnv = lib.filterAttrs (_: v: v != null && v != "") {
     COVIBE_STATE_DIR = cfg.stateDir;
-    COVIBE_RELAY = cfg.relay;
-    COVIBE_COLLAB_WS = "ws://" + d.addr;
-    COVIBE_WEB_URL = cfg.webUrl;
+    COVIBE_RELAY_HOST = cfg.relayHost;
+    COVIBE_WEB_CLIENT = cfg.webClient;
+    COVIBE_LOCAL_RELAY = "ws://" + d.addr;
     COVIBE_MUX = cfg.mux;
     COVIBE_MUX_SESSION = cfg.muxSession;
     OMP_AUTH_BROKER_URL = cfg.authBrokerUrl;
@@ -82,22 +82,27 @@ in
       description = "Session spool directory shared by session wrappers and the dashboard.";
     };
 
-    relay = lib.mkOption {
+    relayHost = lib.mkOption {
       type = lib.types.str;
       default = "";
-      example = "wss://relay.example.com";
+      example = "covibe.lassul.us";
       description = ''
-        Collab relay URL used for `/collab`. Sessions started through covibe
-        pass this inline so links point at your relay; empty uses omp's default
-        (wss://my.omp.sh). Point this at your self-hosted omp relay.
+        Public host collab clients connect to (guest links + collab-web).
+        covibe serves the omp-compatible relay at /r/ on this host and embeds
+        it in each session's join/browser links. Required for collab.
       '';
     };
 
-    webUrl = lib.mkOption {
+    webClient = lib.mkOption {
       type = lib.types.str;
-      default = "";
-      example = "https://collab.example.com";
-      description = "Browser UI base for collab deep links, when hosted separately from the relay.";
+      default = "https://my.omp.sh";
+      example = "https://covibe.lassul.us";
+      description = ''
+        collab-web client base for browser links: the deep link is
+        <webClient>/#<relayHost>/r/<room>.<key>. Defaults to omp's hosted
+        client (content-blind; the room key stays in the URL fragment). Point
+        at a self-hosted collab-web build to drop the external dependency.
+      '';
     };
 
     mux = lib.mkOption {

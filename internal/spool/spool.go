@@ -34,10 +34,10 @@ type Record struct {
 	PID        int       `json:"pid"`                  // pid of the covibe session wrapper
 	Status     string    `json:"status"`
 	Relay      string    `json:"relay,omitempty"`      // ws(s):// relay used for /collab
-	JoinLink   string    `json:"joinLink,omitempty"`   // canonical "<roomId>.<key>"
-	BrowserURL string    `json:"browserUrl,omitempty"` // https deep link for phones/browsers
+	JoinLink   string    `json:"joinLink,omitempty"`   // omp join string "<host>/r/<roomId>.<secret>"
+	BrowserURL string    `json:"browserUrl,omitempty"` // https collab-web deep link for phones/browsers
 	ViewOnly   bool      `json:"viewOnly,omitempty"`
-	HostToken  string    `json:"hostToken,omitempty"` // authorizes the omp plugin's relay connection (server-side only)
+	RoomID     string    `json:"roomId,omitempty"` // covibe-minted collab room id (stable per session)
 	StartedAt  time.Time `json:"startedAt"`
 	UpdatedAt  time.Time `json:"updatedAt"`
 }

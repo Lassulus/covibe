@@ -18,9 +18,10 @@ type Options struct {
 	Dir        string
 	Mux        string // "zellij" | "tmux"
 	MuxSession string
-	WebURL     string
+	RelayHost  string // public host for guest links, e.g. "covibe.lassul.us"
+	WebClient  string // collab-web base for browser links, e.g. "https://my.omp.sh"
+	LocalRelay string // ws(s):// base the omp host connects to
 	Omp        string
-	CollabWS   string // ws(s):// base of the covibe dashboard relay
 	StateDir   string
 }
 
@@ -46,11 +47,14 @@ func (o Options) inner() ([]string, error) {
 		"--mux", o.Mux,
 		"--mux-session", o.MuxSession,
 	}
-	if o.CollabWS != "" {
-		argv = append(argv, "--collab-ws", o.CollabWS)
+	if o.RelayHost != "" {
+		argv = append(argv, "--relay-host", o.RelayHost)
 	}
-	if o.WebURL != "" {
-		argv = append(argv, "--web", o.WebURL)
+	if o.WebClient != "" {
+		argv = append(argv, "--web-client", o.WebClient)
+	}
+	if o.LocalRelay != "" {
+		argv = append(argv, "--local-relay", o.LocalRelay)
 	}
 	if o.StateDir != "" {
 		argv = append(argv, "--state-dir", o.StateDir)

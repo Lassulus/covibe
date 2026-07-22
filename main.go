@@ -94,8 +94,9 @@ func cmdSession(args []string) error {
 	name := fs.String("name", "", "session display name")
 	dir := fs.String("dir", "", "working directory for omp")
 	omp := fs.String("omp", env("COVIBE_OMP", "omp"), "omp binary")
-	web := fs.String("web", env("COVIBE_WEB_URL", ""), "browser UI base for deep links")
-	collabWS := fs.String("collab-ws", env("COVIBE_COLLAB_WS", ""), "ws(s):// base of the covibe dashboard relay")
+	relayHost := fs.String("relay-host", env("COVIBE_RELAY_HOST", ""), "public host for guest links, e.g. covibe.lassul.us")
+	webClient := fs.String("web-client", env("COVIBE_WEB_CLIENT", "https://my.omp.sh"), "collab-web client base for browser links")
+	localRelay := fs.String("local-relay", env("COVIBE_LOCAL_RELAY", ""), "ws(s):// relay base the omp host connects to")
 	muxName := fs.String("mux", env("COVIBE_MUX", ""), "multiplexer label (zellij|tmux)")
 	muxSession := fs.String("mux-session", env("COVIBE_MUX_SESSION", ""), "multiplexer session name")
 	stateDir := fs.String("state-dir", "", "spool directory")
@@ -116,8 +117,9 @@ func cmdSession(args []string) error {
 		Dir:        *dir,
 		OmpBin:     *omp,
 		OmpArgs:    fs.Args(),
-		WebURL:     *web,
-		CollabWS:   *collabWS,
+		RelayHost:  *relayHost,
+		WebClient:  *webClient,
+		LocalRelay: *localRelay,
 		Mux:        *muxName,
 		MuxSession: *muxSession,
 		Store:      store,
@@ -131,8 +133,9 @@ func cmdStart(args []string) error {
 	dir := fs.String("dir", "", "working directory (default: cwd)")
 	muxName := fs.String("mux", env("COVIBE_MUX", "zellij"), "multiplexer: zellij|tmux")
 	muxSession := fs.String("session", env("COVIBE_MUX_SESSION", "covibe"), "multiplexer session name")
-	collabWS := fs.String("collab-ws", env("COVIBE_COLLAB_WS", ""), "ws(s):// base of the covibe dashboard relay")
-	web := fs.String("web", env("COVIBE_WEB_URL", ""), "browser UI base for deep links")
+	relayHost := fs.String("relay-host", env("COVIBE_RELAY_HOST", ""), "public host for guest links")
+	webClient := fs.String("web-client", env("COVIBE_WEB_CLIENT", "https://my.omp.sh"), "collab-web client base")
+	localRelay := fs.String("local-relay", env("COVIBE_LOCAL_RELAY", ""), "ws(s):// relay base the omp host connects to")
 	omp := fs.String("omp", env("COVIBE_OMP", "omp"), "omp binary")
 	stateDir := fs.String("state-dir", "", "spool directory")
 	dryRun := fs.Bool("dry-run", false, "print the mux command instead of running it")
@@ -165,8 +168,9 @@ func cmdStart(args []string) error {
 		Dir:        *dir,
 		Mux:        *muxName,
 		MuxSession: *muxSession,
-		CollabWS:   *collabWS,
-		WebURL:     *web,
+		RelayHost:  *relayHost,
+		WebClient:  *webClient,
+		LocalRelay: *localRelay,
 		Omp:        *omp,
 		StateDir:   *stateDir,
 	}
@@ -222,8 +226,8 @@ func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", env("COVIBE_ADDR", "127.0.0.1:8770"), "listen address")
 	stateDir := fs.String("state-dir", "", "spool directory")
-	relay := fs.String("relay", env("COVIBE_RELAY", ""), "default relay URL shown in UI")
-	web := fs.String("web", env("COVIBE_WEB_URL", ""), "browser UI base for deep links")
+	relayHost := fs.String("relay-host", env("COVIBE_RELAY_HOST", ""), "public host for guest collab links, e.g. covibe.lassul.us")
+	webClient := fs.String("web-client", env("COVIBE_WEB_CLIENT", "https://my.omp.sh"), "collab-web client base for browser links")
 	noAuth := fs.Bool("no-auth", os.Getenv("COVIBE_NO_AUTH") == "1", "disable OIDC (loopback dev only)")
 	insecure := fs.Bool("insecure", os.Getenv("COVIBE_INSECURE") == "1", "allow cookies over plain http")
 	issuer := fs.String("oidc-issuer", env("COVIBE_OIDC_ISSUER", ""), "OIDC issuer URL")
@@ -241,11 +245,10 @@ func cmdServe(args []string) error {
 	apiKeys := fs.String("api-keys", env("COVIBE_API_KEYS", ""), "comma/space-separated API keys for the /api/v1 REST surface")
 	apiKeysFile := fs.String("api-keys-file", env("COVIBE_API_KEYS_FILE", ""), "file of API keys (one per line, # comments) for /api/v1")
 	maxSessions := fs.Int("max-sessions", envInt("COVIBE_MAX_SESSIONS", 0), "cap on concurrent live sessions (0 = unlimited)")
-	collabWS := fs.String("collab-ws", env("COVIBE_COLLAB_WS", ""), "ws(s):// base for the collab relay (default derived from addr)")
+	localRelay := fs.String("local-relay", env("COVIBE_LOCAL_RELAY", ""), "ws(s):// relay base the omp host connects to (default ws://<addr>)")
 	_ = fs.Parse(args)
-	cws := *collabWS
-	if cws == "" {
-		cws = "ws://" + *addr
+	if *localRelay == "" {
+		*localRelay = "ws://" + *addr
 	}
 
 	store, err := spool.Open(*stateDir)
@@ -275,8 +278,8 @@ func cmdServe(args []string) error {
 	cfg := dashboard.Config{
 		Store:         store,
 		Auth:          auth,
-		Relay:         *relay,
-		WebURL:        *web,
+		RelayHost:     *relayHost,
+		WebClient:     *webClient,
 		WorkspaceRoot: *workspace,
 		APIKeys:       keys,
 		MaxSessions:   *maxSessions,
@@ -289,8 +292,9 @@ func cmdServe(args []string) error {
 				Dir:        dir,
 				Mux:        *muxName,
 				MuxSession: *muxSession,
-				CollabWS:   cws,
-				WebURL:     *web,
+				RelayHost:  *relayHost,
+				WebClient:  *webClient,
+				LocalRelay: *localRelay,
 				Omp:        *ompBin,
 				StateDir:   store.Dir(),
 			})

@@ -97,15 +97,25 @@ function card(s){
     body += '<div class="link"><input readonly value="'+esc(s.browserUrl)+'">'+
             '<button data-copy="'+esc(s.browserUrl)+'">copy</button></div>';
     body += '<a class="open" href="'+esc(s.browserUrl)+'" target="_blank" rel="noopener">open in browser ↗</a>';
+    if (s.joinLink){
+      body += '<div class="link"><input readonly value="omp join &quot;'+esc(s.joinLink)+'&quot;">'+
+              '<button data-copy="omp join &quot;'+esc(s.joinLink)+'&quot;">copy</button></div>';
+    }
   } else {
     body += '<div class="waiting">starting…</div>';
   }
-  body += '<div class="actions"><button class="pane" data-pane="'+esc(s.id)+'">view pane</button></div>';
+  body += '<div class="actions"><button class="pane" data-pane="'+esc(s.id)+'">view pane</button>'+
+          '<button class="kill" data-kill="'+esc(s.id)+'">kill</button></div>';
   el.innerHTML = body;
   el.querySelectorAll('button[data-copy]').forEach(b=>{
     b.onclick = ()=>{ navigator.clipboard.writeText(b.dataset.copy); b.textContent='copied'; setTimeout(()=>b.textContent='copy',1200); };
   });
   el.querySelector('button[data-pane]').onclick = ()=>showPane(s.id, s.name||s.id);
+  el.querySelector('button[data-kill]').onclick = async ()=>{
+    if (!confirm('Kill session '+(s.name||s.id)+'?')) return;
+    try { await fetch('/api/v1/sessions/'+encodeURIComponent(s.id), {method:'DELETE'}); } catch(e){}
+    setTimeout(refresh, 300);
+  };
   return el;
 }
 

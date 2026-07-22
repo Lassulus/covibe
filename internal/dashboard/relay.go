@@ -2,68 +2,71 @@ package dashboard
 
 import (
 	"context"
-	"crypto/subtle"
+	"encoding/binary"
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
-
-	"github.com/lassulus/covibe/internal/spool"
 )
 
-// Relay is covibe's own collab hub: one room per live session. The omp plugin
-// connects as the single host and streams normalized events; browser viewers
-// connect as guests, receive a replay of recent events, then the live stream.
-// Guests may send prompt/abort frames, which are forwarded to the host.
+// Relay is covibe's self-hosted omp collab relay: a content-blind WebSocket hub
+// that speaks the exact contract omp's host, `omp join` guests, and collab-web
+// expect (see omp packages/collab-web/scripts/local-relay.ts).
 //
-// There is no end-to-end crypto here (unlike omp's public relay): the trust
-// boundary is TLS + OIDC. The relay lives in the dashboard process and shares
-// its auth; the host endpoint is gated by a per-session token.
+//   - GET /r/<roomId>?role=host|guest upgrades to a WebSocket.
+//   - The host creates the room; a second host is rejected (close 4009); a guest
+//     joining a missing room is rejected (close 4004).
+//   - Binary frames carry a 4-byte big-endian peerId envelope + sealed payload.
+//     Host peerId 0 broadcasts to every guest; peerId N targets guest N. Guest
+//     frames have their first 4 bytes rewritten to the sender's id, then go to
+//     the host.
+//   - TEXT control to the host: {"t":"peer-joined","peer":N}/{"t":"peer-left"}.
+//   - Host disconnect: TEXT {"t":"room-closed"} to guests, then close 4001.
+//
+// Payloads are sealed end to end; the relay never sees plaintext. Possession of
+// the room key (carried in the link fragment, never sent here) is the trust
+// boundary — so /r/ is intentionally unauthenticated, like the public relay.
 type Relay struct {
-	mu         sync.Mutex
-	rooms      map[string]*room
-	store      *spool.Store
-	originHost string // allowed browser Origin host for guest WS (from WebURL); "" = same-origin
+	mu    sync.Mutex
+	rooms map[string]*relayRoom
 }
 
-func newRelay(store *spool.Store, originHost string) *Relay {
-	return &Relay{rooms: map[string]*room{}, store: store, originHost: originHost}
+func newRelay() *Relay { return &Relay{rooms: map[string]*relayRoom{}} }
+
+const relayEnvHeader = 4
+
+var relayRoomRe = regexp.MustCompile(`^/r/([A-Za-z0-9_-]{10,64})$`)
+
+type relayFrame struct {
+	typ  websocket.MessageType
+	data []byte
 }
 
-const (
-	relayRingFrames = 2000
-	relayRingBytes  = 1 << 20 // 1 MiB replay budget per room
-	relaySendBuffer = 512
-	relayWriteWait  = 10 * time.Second
-)
-
-// conn is one websocket peer (host or guest) with a buffered writer so a slow
-// peer never blocks the hub.
-type conn struct {
-	ws   *websocket.Conn
-	send chan []byte
+type relayConn struct {
+	ws     *websocket.Conn
+	send   chan relayFrame
+	peerID uint32
 }
 
-func newConn(ws *websocket.Conn) *conn {
-	return &conn{ws: ws, send: make(chan []byte, relaySendBuffer)}
+func newRelayConn(ws *websocket.Conn) *relayConn {
+	return &relayConn{ws: ws, send: make(chan relayFrame, 256)}
 }
 
-// enqueue queues a frame without blocking; false means the peer is too slow.
-func (c *conn) enqueue(msg []byte) bool {
+func (c *relayConn) enqueue(f relayFrame) {
 	select {
-	case c.send <- msg:
-		return true
+	case c.send <- f:
 	default:
-		return false
+		_ = c.ws.Close(websocket.StatusPolicyViolation, "slow consumer")
 	}
 }
 
-func (c *conn) writeLoop(ctx context.Context) {
-	for msg := range c.send {
-		wctx, cancel := context.WithTimeout(ctx, relayWriteWait)
-		err := c.ws.Write(wctx, websocket.MessageText, msg)
+func (c *relayConn) writeLoop(ctx context.Context) {
+	for f := range c.send {
+		wctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		err := c.ws.Write(wctx, f.typ, f.data)
 		cancel()
 		if err != nil {
 			return
@@ -71,291 +74,155 @@ func (c *conn) writeLoop(ctx context.Context) {
 	}
 }
 
-type ringItem struct {
-	raw []byte // a complete server->guest {"t":"ev",...} frame
-}
-
-type room struct {
-	id string
-
+type relayRoom struct {
 	mu     sync.Mutex
-	seq    int
-	ring   []ringItem
-	bytes  int
-	guests map[*conn]struct{}
-	host   *conn
-	name   string
-	dir    string
-	status string
+	host   *relayConn
+	guests map[uint32]*relayConn
+	next   uint32
 }
 
-func (rl *Relay) room(id string) *room {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-	rm := rl.rooms[id]
-	if rm == nil {
-		rm = &room{id: id, guests: map[*conn]struct{}{}, status: spool.StatusStarting}
-		rl.rooms[id] = rm
-	}
-	return rm
+func ctrlFrame(t string, peer uint32) relayFrame {
+	b, _ := json.Marshal(map[string]any{"t": t, "peer": peer})
+	return relayFrame{typ: websocket.MessageText, data: b}
 }
 
-func (rl *Relay) dropIfEmpty(rm *room) {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-	rm.mu.Lock()
-	empty := rm.host == nil && len(rm.guests) == 0
-	rm.mu.Unlock()
-	if empty && rl.rooms[rm.id] == rm {
-		delete(rl.rooms, rm.id)
-	}
+func ctrlFrameNoPeer(t string) relayFrame {
+	b, _ := json.Marshal(map[string]any{"t": t})
+	return relayFrame{typ: websocket.MessageText, data: b}
 }
 
-func mustJSON(v any) []byte {
-	b, _ := json.Marshal(v)
-	return b
-}
-
-func (rm *room) metaFrame() []byte {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
-	return mustJSON(map[string]any{
-		"t": "meta", "name": rm.name, "dir": rm.dir, "status": rm.status, "guests": len(rm.guests),
-	})
-}
-
-func (rm *room) broadcastToGuests(frame []byte) {
-	rm.mu.Lock()
-	gs := make([]*conn, 0, len(rm.guests))
-	for g := range rm.guests {
-		gs = append(gs, g)
-	}
-	rm.mu.Unlock()
-	for _, g := range gs {
-		if !g.enqueue(frame) {
-			_ = g.ws.Close(websocket.StatusPolicyViolation, "slow consumer")
-		}
-	}
-}
-
-// broadcastEv assigns a seq, buffers the ev in the ring, and fans it out.
-func (rm *room) broadcastEv(ev json.RawMessage) {
-	rm.mu.Lock()
-	rm.seq++
-	frame := mustJSON(struct {
-		T   string          `json:"t"`
-		Seq int             `json:"seq"`
-		E   json.RawMessage `json:"e"`
-	}{"ev", rm.seq, ev})
-	rm.ring = append(rm.ring, ringItem{raw: frame})
-	rm.bytes += len(frame)
-	for len(rm.ring) > 1 && (len(rm.ring) > relayRingFrames || rm.bytes > relayRingBytes) {
-		rm.bytes -= len(rm.ring[0].raw)
-		rm.ring = rm.ring[1:]
-	}
-	gs := make([]*conn, 0, len(rm.guests))
-	for g := range rm.guests {
-		gs = append(gs, g)
-	}
-	rm.mu.Unlock()
-	for _, g := range gs {
-		if !g.enqueue(frame) {
-			_ = g.ws.Close(websocket.StatusPolicyViolation, "slow consumer")
-		}
-	}
-}
-
-// addGuest registers a guest and returns the replay frames (meta + ring),
-// snapshotted under the lock so it interleaves cleanly with live broadcasts.
-func (rm *room) addGuest(c *conn) [][]byte {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
-	rm.guests[c] = struct{}{}
-	out := make([][]byte, 0, len(rm.ring)+1)
-	out = append(out, mustJSON(map[string]any{
-		"t": "meta", "name": rm.name, "dir": rm.dir, "status": rm.status, "guests": len(rm.guests),
-	}))
-	for _, it := range rm.ring {
-		out = append(out, it.raw)
-	}
-	return out
-}
-
-// markStatus best-effort updates the spool record's status (e.g. -> live).
-func (rl *Relay) markStatus(id, status string) {
-	rec, err := rl.store.Load(id)
-	if err != nil || rec.Status == status {
+// ServeRelay handles GET /r/<roomId>?role=host|guest.
+func (rl *Relay) ServeRelay(w http.ResponseWriter, r *http.Request) {
+	m := relayRoomRe.FindStringSubmatch(r.URL.Path)
+	role := r.URL.Query().Get("role")
+	if m == nil || (role != "host" && role != "guest") {
+		http.NotFound(w, r)
 		return
 	}
-	rec.Status = status
-	_ = rl.store.Save(rec)
-}
-
-// ServeHost upgrades the omp plugin's host connection. Gated by a per-session
-// token (the plugin has no cookie); accepts any Origin since it is not a
-// browser and carries no ambient credentials.
-func (rl *Relay) ServeHost(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	token := r.URL.Query().Get("token")
-	rec, err := rl.store.Load(id)
-	if err != nil || rec.HostToken == "" ||
-		subtle.ConstantTimeCompare([]byte(token), []byte(rec.HostToken)) != 1 {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
+	roomID := m[1]
+	// Content-blind + credential-free: the link key is the trust boundary, and
+	// neither omp hosts nor browser guests present a same-origin/cookie the
+	// default check could use.
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
 		return
 	}
-	ws.SetReadLimit(8 << 20)
-	c := newConn(ws)
-	rm := rl.room(id)
-
-	rm.mu.Lock()
-	old := rm.host
-	rm.host = c
-	rm.status = spool.StatusLive
-	if rm.name == "" {
-		rm.name = rec.Name
-	}
-	if rm.dir == "" {
-		rm.dir = rec.Dir
-	}
-	rm.mu.Unlock()
-	if old != nil {
-		_ = old.ws.Close(websocket.StatusNormalClosure, "replaced by new host")
-	}
-	rl.markStatus(id, spool.StatusLive)
-	rm.broadcastToGuests(rm.metaFrame())
-
+	ws.SetReadLimit(32 << 20)
 	ctx := context.Background()
-	go c.writeLoop(ctx)
+	c := newRelayConn(ws)
 
-	for {
-		typ, data, err := ws.Read(ctx)
-		if err != nil {
-			break
-		}
-		if typ != websocket.MessageText {
-			continue
-		}
-		var f struct {
-			T    string          `json:"t"`
-			Name string          `json:"name"`
-			Dir  string          `json:"dir"`
-			E    json.RawMessage `json:"e"`
-		}
-		if json.Unmarshal(data, &f) != nil {
-			continue
-		}
-		switch f.T {
-		case "hello":
-			rm.mu.Lock()
-			if f.Name != "" {
-				rm.name = f.Name
-			}
-			if f.Dir != "" {
-				rm.dir = f.Dir
-			}
-			rm.mu.Unlock()
-			rm.broadcastToGuests(rm.metaFrame())
-		case "ev":
-			if len(f.E) > 0 {
-				rm.broadcastEv(f.E)
-			}
-		}
+	if role == "host" {
+		rl.serveHost(ctx, roomID, c)
+	} else {
+		rl.serveGuest(ctx, roomID, c)
 	}
-
-	close(c.send)
-	rm.mu.Lock()
-	if rm.host == c {
-		rm.host = nil
-		rm.status = spool.StatusEnded
-	}
-	rm.mu.Unlock()
-	rm.broadcastToGuests(mustJSON(map[string]any{"t": "end", "reason": "host disconnected"}))
-	rm.broadcastToGuests(rm.metaFrame())
-	rl.dropIfEmpty(rm)
 }
 
-// ServeGuest upgrades a browser viewer. Auth (OIDC session / API key) is applied
-// by the caller wrapper; the default same-origin Origin check still applies.
-func (rl *Relay) ServeGuest(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	opts := &websocket.AcceptOptions{}
-	if rl.originHost != "" {
-		// Behind a reverse proxy the Host header is rewritten, so the default
-		// same-origin check fails. Pin the allowed browser Origin to our public
-		// host instead (keeps cross-site WS CSRF protection).
-		opts.OriginPatterns = []string{rl.originHost}
-	}
-	ws, err := websocket.Accept(w, r, opts)
-	if err != nil {
+func (rl *Relay) serveHost(ctx context.Context, roomID string, c *relayConn) {
+	rl.mu.Lock()
+	if _, exists := rl.rooms[roomID]; exists {
+		rl.mu.Unlock()
+		_ = c.ws.Close(4009, "a host is already connected for this room")
 		return
 	}
-	ws.SetReadLimit(1 << 20)
-	c := newConn(ws)
-	rm := rl.room(id)
-	replay := rm.addGuest(c)
-	rm.broadcastToGuests(rm.metaFrame())
+	room := &relayRoom{host: c, guests: map[uint32]*relayConn{}, next: 1}
+	rl.rooms[roomID] = room
+	rl.mu.Unlock()
 
-	ctx := context.Background()
-	// Write the replay synchronously (it can exceed the send buffer), then hand
-	// off to the buffered writer for the live stream.
-	for _, m := range replay {
-		wctx, cancel := context.WithTimeout(ctx, relayWriteWait)
-		werr := ws.Write(wctx, websocket.MessageText, m)
-		cancel()
-		if werr != nil {
-			_ = ws.Close(websocket.StatusPolicyViolation, "slow consumer")
-			rm.mu.Lock()
-			delete(rm.guests, c)
-			rm.mu.Unlock()
-			rl.dropIfEmpty(rm)
-			return
-		}
-	}
 	go c.writeLoop(ctx)
+	defer func() {
+		rl.mu.Lock()
+		if rl.rooms[roomID] == room {
+			delete(rl.rooms, roomID)
+		}
+		rl.mu.Unlock()
+		room.mu.Lock()
+		guests := make([]*relayConn, 0, len(room.guests))
+		for _, g := range room.guests {
+			guests = append(guests, g)
+		}
+		room.guests = map[uint32]*relayConn{}
+		room.mu.Unlock()
+		for _, g := range guests {
+			g.enqueue(ctrlFrameNoPeer("room-closed"))
+			_ = g.ws.Close(4001, "room closed")
+		}
+		close(c.send)
+	}()
 
 	for {
-		typ, data, err := ws.Read(ctx)
+		typ, data, err := c.ws.Read(ctx)
 		if err != nil {
-			break
+			return
 		}
-		if typ != websocket.MessageText {
+		if typ != websocket.MessageBinary || len(data) < relayEnvHeader {
 			continue
 		}
-		var f struct {
-			T    string `json:"t"`
-			Text string `json:"text"`
-		}
-		if json.Unmarshal(data, &f) != nil {
-			continue
-		}
-		var out []byte
-		switch f.T {
-		case "prompt":
-			if f.Text == "" {
-				continue
+		peer := binary.BigEndian.Uint32(data[:relayEnvHeader])
+		room.mu.Lock()
+		if peer == 0 {
+			for _, g := range room.guests {
+				g.enqueue(relayFrame{typ: websocket.MessageBinary, data: data})
 			}
-			out = mustJSON(map[string]any{"t": "prompt", "text": f.Text})
-		case "abort":
-			out = mustJSON(map[string]any{"t": "abort"})
-		default:
+		} else if g := room.guests[peer]; g != nil {
+			g.enqueue(relayFrame{typ: websocket.MessageBinary, data: data})
+		}
+		room.mu.Unlock()
+	}
+}
+
+func (rl *Relay) serveGuest(ctx context.Context, roomID string, c *relayConn) {
+	rl.mu.Lock()
+	room := rl.rooms[roomID]
+	rl.mu.Unlock()
+	if room == nil {
+		_ = c.ws.Close(4004, "no such room")
+		return
+	}
+	room.mu.Lock()
+	peerID := room.next
+	room.next++
+	c.peerID = peerID
+	room.guests[peerID] = c
+	host := room.host
+	room.mu.Unlock()
+
+	go c.writeLoop(ctx)
+	host.enqueue(ctrlFrame("peer-joined", peerID))
+	defer func() {
+		room.mu.Lock()
+		_, stillHere := room.guests[peerID]
+		delete(room.guests, peerID)
+		h := room.host
+		room.mu.Unlock()
+		if stillHere && h != nil {
+			h.enqueue(ctrlFrame("peer-left", peerID))
+		}
+		close(c.send)
+	}()
+
+	for {
+		typ, data, err := c.ws.Read(ctx)
+		if err != nil {
+			return
+		}
+		if typ != websocket.MessageBinary || len(data) < relayEnvHeader {
 			continue
 		}
-		rm.mu.Lock()
-		host := rm.host
-		rm.mu.Unlock()
-		if host != nil {
-			host.enqueue(out)
+		binary.BigEndian.PutUint32(data[:relayEnvHeader], peerID)
+		room.mu.Lock()
+		h := room.host
+		room.mu.Unlock()
+		if h != nil {
+			h.enqueue(relayFrame{typ: websocket.MessageBinary, data: data})
 		}
 	}
+}
 
-	close(c.send)
-	rm.mu.Lock()
-	delete(rm.guests, c)
-	rm.mu.Unlock()
-	rm.broadcastToGuests(rm.metaFrame())
-	rl.dropIfEmpty(rm)
+// roomLive reports whether a host is currently connected for roomID.
+func (rl *Relay) roomLive(roomID string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	_, ok := rl.rooms[roomID]
+	return ok
 }

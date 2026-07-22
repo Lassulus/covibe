@@ -3,9 +3,8 @@ package dashboard
 import (
 	"encoding/json"
 	"net/http"
-	"net/url"
 	"strconv"
-	"strings"
+	"syscall"
 	"time"
 
 	"github.com/lassulus/covibe/internal/spool"
@@ -15,8 +14,8 @@ import (
 type Config struct {
 	Store     *spool.Store
 	Auth      *Authenticator
-	Relay     string        // default relay shown in the UI
-	WebURL    string        // default browser UI base for deep links
+	RelayHost string        // public host for guest collab links, e.g. "covibe.lassul.us"
+	WebClient string        // collab-web client base for browser links, e.g. "https://my.omp.sh"
 	KeepEnded time.Duration // how long ended sessions linger in the list
 	// Web/API-initiated session creation. Enabled only when both WorkspaceRoot
 	// is set and Create is non-nil. Create launches a new omp covibe session
@@ -45,14 +44,8 @@ func NewServer(cfg Config) *Server {
 	if cfg.KeepEnded == 0 {
 		cfg.KeepEnded = 20 * time.Second
 	}
-	originHost := ""
-	if cfg.WebURL != "" {
-		if u, err := url.Parse(cfg.WebURL); err == nil {
-			originHost = u.Host
-		}
-	}
 	// Throttle a client after 10 failed auth attempts per minute.
-	return &Server{cfg: cfg, fails: newFailLimiter(10, time.Minute), relay: newRelay(cfg.Store, originHost)}
+	return &Server{cfg: cfg, fails: newFailLimiter(10, time.Minute), relay: newRelay()}
 }
 
 // Handler returns the fully wired http.Handler (auth + routes).
@@ -74,17 +67,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/sessions", s.requireAPI(s.handleCreate))
 	mux.HandleFunc("GET /api/v1/sessions/{id}", s.requireAPI(s.handleGetOne))
 	mux.HandleFunc("GET /api/v1/sessions/{id}/pane", s.requireAPI(s.handlePane))
+	mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.requireAPI(s.handleKill))
 
-	// Collab relay: host = the omp plugin (per-session token, validated inside);
-	// guest = the browser viewer (OIDC session or API key). Neither redirects.
-	mux.HandleFunc("/collab/host/{id}", s.relay.ServeHost)
-	mux.HandleFunc("/collab/guest/{id}", s.requireAPI(s.relay.ServeGuest))
+	// Content-blind collab relay: omp host + `omp join`/collab-web guests. No
+	// auth — possession of the room key (in the link fragment) is the trust
+	// boundary, exactly like omp's public relay.
+	mux.HandleFunc("/r/{roomId}", s.relay.ServeRelay)
 
 	// Browser endpoints, gated by OIDC (redirects to login).
 	protected := http.NewServeMux()
 	protected.HandleFunc("/", s.handleIndex)
 	protected.HandleFunc("/qr", s.handleQR)
-	protected.HandleFunc("/s/{id}", s.handleViewer)
 	mux.Handle("/", s.cfg.Auth.Middleware(protected))
 
 	return securityHeaders(mux)
@@ -151,20 +144,32 @@ func (s *Server) viewOf(r spool.Record) sessionView {
 		Status:     r.Status,
 		Mux:        r.Mux,
 		MuxSession: r.MuxSession,
-		Relay:      orDefault(r.Relay, s.cfg.Relay),
+		JoinLink:   r.JoinLink,
 		BrowserURL: r.BrowserURL,
 		ViewOnly:   r.ViewOnly,
-		Room:       r.ID,
+		Room:       r.RoomID,
 		StartedAt:  r.StartedAt,
-	}
-	// Derive the viewer URL from the server's web base when the wrapper had none.
-	if v.BrowserURL == "" && s.cfg.WebURL != "" {
-		v.BrowserURL = strings.TrimSuffix(s.cfg.WebURL, "/") + "/s/" + r.ID
 	}
 	if v.BrowserURL != "" {
 		v.QR = qrDataURI(v.BrowserURL, 240)
 	}
 	return v
+}
+
+// handleKill terminates a session: signal the wrapper process, which tears down
+// omp (and thus the native collab host) and marks the record ended.
+func (s *Server) handleKill(w http.ResponseWriter, r *http.Request) {
+	rec, ok := s.liveRecord(r.PathValue("id"))
+	if !ok {
+		http.Error(w, "no such session", http.StatusNotFound)
+		return
+	}
+	if rec.PID > 0 {
+		_ = syscall.Kill(rec.PID, syscall.SIGTERM)
+	}
+	rec.Status = spool.StatusEnded
+	_ = s.cfg.Store.Save(&rec)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "killed", "id": rec.ID})
 }
 
 func (s *Server) views() ([]sessionView, error) {
@@ -268,7 +273,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		Relay     string
 		CanCreate bool
 		Nonce     string
-	}{User: id, Relay: s.cfg.Relay, CanCreate: s.cfg.Create != nil && s.cfg.WorkspaceRoot != "", Nonce: nonce}
+	}{User: id, Relay: s.cfg.RelayHost, CanCreate: s.cfg.Create != nil && s.cfg.WorkspaceRoot != "", Nonce: nonce}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Security-Policy",
 		"default-src 'self'; script-src 'nonce-"+nonce+"'; style-src 'nonce-"+nonce+"'; "+
