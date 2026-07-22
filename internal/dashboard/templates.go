@@ -41,6 +41,7 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
   .actions { margin-top:.2rem; }
   .actions .pane { font-size:.78rem; }
   .modal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; padding:1.5rem; z-index:10; }
+  .modal[hidden] { display:none; }
   .modalbox { background:var(--card); border:1px solid #30363d; border-radius:10px; width:min(900px,100%); max-height:85vh; display:flex; flex-direction:column; }
   .modalhead { display:flex; justify-content:space-between; align-items:center; padding:.7rem 1rem; border-bottom:1px solid #30363d; }
   .pane-out { margin:0; padding:1rem; overflow:auto; font-family:ui-monospace,monospace; font-size:.78rem; white-space:pre-wrap; word-break:break-word; }
