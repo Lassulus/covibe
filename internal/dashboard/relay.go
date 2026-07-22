@@ -22,13 +22,14 @@ import (
 // boundary is TLS + OIDC. The relay lives in the dashboard process and shares
 // its auth; the host endpoint is gated by a per-session token.
 type Relay struct {
-	mu    sync.Mutex
-	rooms map[string]*room
-	store *spool.Store
+	mu         sync.Mutex
+	rooms      map[string]*room
+	store      *spool.Store
+	originHost string // allowed browser Origin host for guest WS (from WebURL); "" = same-origin
 }
 
-func newRelay(store *spool.Store) *Relay {
-	return &Relay{rooms: map[string]*room{}, store: store}
+func newRelay(store *spool.Store, originHost string) *Relay {
+	return &Relay{rooms: map[string]*room{}, store: store, originHost: originHost}
 }
 
 const (
@@ -281,7 +282,14 @@ func (rl *Relay) ServeHost(w http.ResponseWriter, r *http.Request) {
 // by the caller wrapper; the default same-origin Origin check still applies.
 func (rl *Relay) ServeGuest(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	ws, err := websocket.Accept(w, r, nil)
+	opts := &websocket.AcceptOptions{}
+	if rl.originHost != "" {
+		// Behind a reverse proxy the Host header is rewritten, so the default
+		// same-origin check fails. Pin the allowed browser Origin to our public
+		// host instead (keeps cross-site WS CSRF protection).
+		opts.OriginPatterns = []string{rl.originHost}
+	}
+	ws, err := websocket.Accept(w, r, opts)
 	if err != nil {
 		return
 	}

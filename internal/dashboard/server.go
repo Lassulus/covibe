@@ -3,6 +3,7 @@ package dashboard
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -44,8 +45,14 @@ func NewServer(cfg Config) *Server {
 	if cfg.KeepEnded == 0 {
 		cfg.KeepEnded = 20 * time.Second
 	}
+	originHost := ""
+	if cfg.WebURL != "" {
+		if u, err := url.Parse(cfg.WebURL); err == nil {
+			originHost = u.Host
+		}
+	}
 	// Throttle a client after 10 failed auth attempts per minute.
-	return &Server{cfg: cfg, fails: newFailLimiter(10, time.Minute), relay: newRelay(cfg.Store)}
+	return &Server{cfg: cfg, fails: newFailLimiter(10, time.Minute), relay: newRelay(cfg.Store, originHost)}
 }
 
 // Handler returns the fully wired http.Handler (auth + routes).

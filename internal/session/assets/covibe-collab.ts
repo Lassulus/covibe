@@ -158,11 +158,13 @@ export default function covibeCollab(pi: ExtensionAPI): void {
 			return;
 		}
 		const t = pickStr(msg, "t");
+		log(`ctrl ${String(t)}`);
 		if (t === "prompt") {
 			const text = pickStr(msg, "text");
 			if (text !== undefined && text !== "") {
 				try {
 					pi.sendUserMessage(text);
+					log("sendUserMessage ok");
 				} catch (err) {
 					log(`prompt failed: ${String(err)}`);
 				}
