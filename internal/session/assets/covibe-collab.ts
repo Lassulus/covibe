@@ -68,6 +68,20 @@ function pickObj(v: unknown, key: string): unknown {
 	if (!isRecord(v) || !(key in v)) return undefined;
 	return v[key];
 }
+// messageText extracts text already present on a message (user prompts and
+// pre-filled content arrive whole, not as streamed text deltas).
+function messageText(message: unknown): string {
+	const content = pickObj(message, "content");
+	if (typeof content === "string") return content;
+	if (Array.isArray(content)) {
+		let out = "";
+		for (const part of content) {
+			if (pickStr(part, "type") === "text") out += pickStr(part, "text") ?? "";
+		}
+		return out;
+	}
+	return pickStr(message, "text") ?? "";
+}
 function isTruthy(v: unknown): boolean {
 	return v === true || v === "true" || v === 1;
 }
@@ -233,6 +247,9 @@ export default function covibeCollab(pi: ExtensionAPI): void {
 		const role = (pickStr(message, "role") ?? pickStr(event, "role")) === "user" ? "user" : "assistant";
 		curMsgId = id;
 		emit({ k: "msg", id, role });
+		const initial = messageText(message);
+		log(`msgstart role=${role} textlen=${initial.length}`);
+		if (role === "user" && initial !== "") emit({ k: "text", id, delta: initial });
 	});
 
 	pi.on("message_update", (event, ctx): void => {
