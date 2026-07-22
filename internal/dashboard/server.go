@@ -150,6 +150,11 @@ func (s *Server) viewOf(r spool.Record) sessionView {
 		Room:       r.RoomID,
 		StartedAt:  r.StartedAt,
 	}
+	// The omp host connecting to the relay is the true "live" signal (the record
+	// itself only flips to ended when the wrapper exits).
+	if r.Status != spool.StatusEnded && r.RoomID != "" && s.relay.roomLive(r.RoomID) {
+		v.Status = spool.StatusLive
+	}
 	if v.BrowserURL != "" {
 		v.QR = qrDataURI(v.BrowserURL, 240)
 	}
