@@ -8,12 +8,17 @@ self:
 let
   cfg = config.services.covibe;
   d = cfg.dashboard;
+  # Absolute omp path so covibe execs the (patched) omp regardless of the mux
+  # server's PATH — a pre-existing zellij/tmux server started before a deploy
+  # otherwise resolves "omp" to the old binary, which ignores OMP_COLLAB_*.
+  ompBin = if cfg.ompPackage != null then "${cfg.ompPackage}/bin/omp" else cfg.omp;
 
   # COVIBE_* environment shared by the dashboard service and — when
   # installGlobally is set — every interactive `covibe start`/`session` so both
   # sides agree on the spool directory, relay and multiplexer.
   sharedEnv = lib.filterAttrs (_: v: v != null && v != "") {
     COVIBE_STATE_DIR = cfg.stateDir;
+    COVIBE_OMP = ompBin;
     COVIBE_RELAY_HOST = cfg.relayHost;
     COVIBE_WEB_CLIENT = cfg.webClient;
     COVIBE_LOCAL_RELAY = "ws://" + d.addr;
@@ -32,7 +37,6 @@ let
       COVIBE_ADDR = d.addr;
       COVIBE_WORKSPACE = d.workspaceRoot;
       COVIBE_MAX_SESSIONS = toString d.maxSessions;
-      COVIBE_OMP = cfg.omp;
       COVIBE_API_KEYS_FILE = d.apiKeysFile;
       COVIBE_OIDC_ISSUER = d.oidc.issuer;
       COVIBE_OIDC_CLIENT_ID = d.oidc.clientId;
