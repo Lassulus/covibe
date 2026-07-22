@@ -15,6 +15,7 @@ let
   sharedEnv = lib.filterAttrs (_: v: v != null && v != "") {
     COVIBE_STATE_DIR = cfg.stateDir;
     COVIBE_RELAY = cfg.relay;
+    COVIBE_COLLAB_WS = "ws://" + d.addr;
     COVIBE_WEB_URL = cfg.webUrl;
     COVIBE_MUX = cfg.mux;
     COVIBE_MUX_SESSION = cfg.muxSession;

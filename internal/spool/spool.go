@@ -37,6 +37,7 @@ type Record struct {
 	JoinLink   string    `json:"joinLink,omitempty"`   // canonical "<roomId>.<key>"
 	BrowserURL string    `json:"browserUrl,omitempty"` // https deep link for phones/browsers
 	ViewOnly   bool      `json:"viewOnly,omitempty"`
+	HostToken  string    `json:"hostToken,omitempty"` // authorizes the omp plugin's relay connection (server-side only)
 	StartedAt  time.Time `json:"startedAt"`
 	UpdatedAt  time.Time `json:"updatedAt"`
 }

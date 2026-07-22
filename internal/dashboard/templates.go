@@ -97,12 +97,8 @@ function card(s){
     body += '<div class="link"><input readonly value="'+esc(s.browserUrl)+'">'+
             '<button data-copy="'+esc(s.browserUrl)+'">copy</button></div>';
     body += '<a class="open" href="'+esc(s.browserUrl)+'" target="_blank" rel="noopener">open in browser ↗</a>';
-    if (s.joinLink){
-      body += '<div class="link"><input readonly value="omp join &quot;'+esc(s.joinLink)+'&quot;">'+
-              '<button data-copy="'+esc(s.joinLink)+'">copy</button></div>';
-    }
   } else {
-    body += '<div class="waiting">waiting for /collab link…</div>';
+    body += '<div class="waiting">starting…</div>';
   }
   body += '<div class="actions"><button class="pane" data-pane="'+esc(s.id)+'">view pane</button></div>';
   el.innerHTML = body;

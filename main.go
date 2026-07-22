@@ -1,6 +1,7 @@
 // Command covibe runs a co-vibing setup: it launches omp sessions inside a
-// terminal multiplexer, captures each session's /collab link, and serves an
-// OIDC-protected dashboard of live sessions with scannable QR codes.
+// terminal multiplexer, streams each session to a built-in collab relay via an
+// omp extension, and serves an OIDC-protected dashboard of live sessions with
+// scannable QR codes plus a browser viewer.
 package main
 
 import (
@@ -86,16 +87,15 @@ func envInt(key string, fallback int) int {
 	return fallback
 }
 
-// cmdSession is the pane process: proxy omp and capture its collab link.
+// cmdSession is the pane process: proxy omp and stream it to covibe's relay.
 func cmdSession(args []string) error {
 	fs := flag.NewFlagSet("session", flag.ExitOnError)
 	id := fs.String("id", "", "stable session id (generated if empty)")
 	name := fs.String("name", "", "session display name")
 	dir := fs.String("dir", "", "working directory for omp")
 	omp := fs.String("omp", env("COVIBE_OMP", "omp"), "omp binary")
-	relay := fs.String("relay", env("COVIBE_RELAY", ""), "collab relay URL (inline /collab arg)")
 	web := fs.String("web", env("COVIBE_WEB_URL", ""), "browser UI base for deep links")
-	auto := fs.String("auto-collab", "full", "auto-start sharing: none|full|view")
+	collabWS := fs.String("collab-ws", env("COVIBE_COLLAB_WS", ""), "ws(s):// base of the covibe dashboard relay")
 	muxName := fs.String("mux", env("COVIBE_MUX", ""), "multiplexer label (zellij|tmux)")
 	muxSession := fs.String("mux-session", env("COVIBE_MUX_SESSION", ""), "multiplexer session name")
 	stateDir := fs.String("state-dir", "", "spool directory")
@@ -116,9 +116,8 @@ func cmdSession(args []string) error {
 		Dir:        *dir,
 		OmpBin:     *omp,
 		OmpArgs:    fs.Args(),
-		Relay:      *relay,
 		WebURL:     *web,
-		AutoCollab: normalizeAuto(*auto),
+		CollabWS:   *collabWS,
 		Mux:        *muxName,
 		MuxSession: *muxSession,
 		Store:      store,
@@ -132,9 +131,8 @@ func cmdStart(args []string) error {
 	dir := fs.String("dir", "", "working directory (default: cwd)")
 	muxName := fs.String("mux", env("COVIBE_MUX", "zellij"), "multiplexer: zellij|tmux")
 	muxSession := fs.String("session", env("COVIBE_MUX_SESSION", "covibe"), "multiplexer session name")
-	relay := fs.String("relay", env("COVIBE_RELAY", ""), "collab relay URL")
+	collabWS := fs.String("collab-ws", env("COVIBE_COLLAB_WS", ""), "ws(s):// base of the covibe dashboard relay")
 	web := fs.String("web", env("COVIBE_WEB_URL", ""), "browser UI base for deep links")
-	auto := fs.String("auto-collab", "full", "auto-start sharing: none|full|view")
 	omp := fs.String("omp", env("COVIBE_OMP", "omp"), "omp binary")
 	stateDir := fs.String("state-dir", "", "spool directory")
 	dryRun := fs.Bool("dry-run", false, "print the mux command instead of running it")
@@ -167,10 +165,9 @@ func cmdStart(args []string) error {
 		Dir:        *dir,
 		Mux:        *muxName,
 		MuxSession: *muxSession,
-		Relay:      *relay,
+		CollabWS:   *collabWS,
 		WebURL:     *web,
 		Omp:        *omp,
-		AutoCollab: *auto,
 		StateDir:   *stateDir,
 	}
 	if *dryRun {
@@ -211,9 +208,9 @@ func cmdList(args []string) error {
 		return nil
 	}
 	for _, r := range recs {
-		link := r.JoinLink
+		link := r.BrowserURL
 		if link == "" {
-			link = "(waiting for /collab)"
+			link = "(starting)"
 		}
 		fmt.Printf("%-8s %-16s %-8s %s\n\t%s\n", r.Status, r.Name, r.Mux, r.Dir, link)
 	}
@@ -244,7 +241,12 @@ func cmdServe(args []string) error {
 	apiKeys := fs.String("api-keys", env("COVIBE_API_KEYS", ""), "comma/space-separated API keys for the /api/v1 REST surface")
 	apiKeysFile := fs.String("api-keys-file", env("COVIBE_API_KEYS_FILE", ""), "file of API keys (one per line, # comments) for /api/v1")
 	maxSessions := fs.Int("max-sessions", envInt("COVIBE_MAX_SESSIONS", 0), "cap on concurrent live sessions (0 = unlimited)")
+	collabWS := fs.String("collab-ws", env("COVIBE_COLLAB_WS", ""), "ws(s):// base for the collab relay (default derived from addr)")
 	_ = fs.Parse(args)
+	cws := *collabWS
+	if cws == "" {
+		cws = "ws://" + *addr
+	}
 
 	store, err := spool.Open(*stateDir)
 	if err != nil {
@@ -287,10 +289,9 @@ func cmdServe(args []string) error {
 				Dir:        dir,
 				Mux:        *muxName,
 				MuxSession: *muxSession,
-				Relay:      *relay,
+				CollabWS:   cws,
 				WebURL:     *web,
 				Omp:        *ompBin,
-				AutoCollab: "full",
 				StateDir:   store.Dir(),
 			})
 		}
@@ -316,17 +317,6 @@ func cmdServe(args []string) error {
 		return err
 	}
 	return nil
-}
-
-func normalizeAuto(v string) string {
-	switch strings.ToLower(v) {
-	case "none", "off", "":
-		return ""
-	case "view", "read", "readonly":
-		return "view"
-	default:
-		return "full"
-	}
 }
 
 func splitList(s string) []string {

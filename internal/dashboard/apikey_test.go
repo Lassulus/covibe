@@ -77,8 +77,8 @@ func newTestServer(t *testing.T, keys APIKeys, noAuth bool) (*Server, *spool.Sto
 	}
 	rec := &spool.Record{
 		ID: "s1", Name: "demo", Dir: "/tmp/demo", Status: spool.StatusLive,
-		PID: os.Getpid(), JoinLink: "room1234.keykeykeykeykeykeykeyZZ",
-		Relay: "wss://r.io", StartedAt: time.Now(),
+		PID: os.Getpid(), BrowserURL: "https://covibe.example/s/s1",
+		StartedAt: time.Now(),
 	}
 	if err := store.Save(rec); err != nil {
 		t.Fatal(err)
@@ -130,7 +130,7 @@ func TestV1GetOne(t *testing.T) {
 	s, _ := newTestServer(t, keys, false)
 	h := s.Handler()
 
-	// The single-session endpoint exposes the omp remote key (joinLink).
+	// The single-session endpoint exposes the session's browser viewer URL.
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/api/v1/sessions/s1", nil)
 	req.Header.Set("X-API-Key", "k")
@@ -139,10 +139,7 @@ func TestV1GetOne(t *testing.T) {
 		t.Fatalf("got %d want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `"joinLink":"room1234.keykeykeykeykeykeykeyZZ"`) {
-		t.Fatalf("missing remote key: %s", body)
-	}
-	if !strings.Contains(body, `"browserUrl":"https://r.io/#room1234`) {
+	if !strings.Contains(body, `"browserUrl":"https://covibe.example/s/s1"`) {
 		t.Fatalf("missing browser url: %s", body)
 	}
 

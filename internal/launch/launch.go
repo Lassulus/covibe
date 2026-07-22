@@ -18,10 +18,9 @@ type Options struct {
 	Dir        string
 	Mux        string // "zellij" | "tmux"
 	MuxSession string
-	Relay      string
 	WebURL     string
 	Omp        string
-	AutoCollab string // "", "full", "view"
+	CollabWS   string // ws(s):// base of the covibe dashboard relay
 	StateDir   string
 }
 
@@ -35,10 +34,6 @@ func (o Options) inner() ([]string, error) {
 		}
 		self = exe
 	}
-	auto := o.AutoCollab
-	if auto == "" {
-		auto = "full"
-	}
 	omp := o.Omp
 	if omp == "" {
 		omp = "omp"
@@ -48,12 +43,11 @@ func (o Options) inner() ([]string, error) {
 		"--name", o.Name,
 		"--dir", o.Dir,
 		"--omp", omp,
-		"--auto-collab", auto,
 		"--mux", o.Mux,
 		"--mux-session", o.MuxSession,
 	}
-	if o.Relay != "" {
-		argv = append(argv, "--relay", o.Relay)
+	if o.CollabWS != "" {
+		argv = append(argv, "--collab-ws", o.CollabWS)
 	}
 	if o.WebURL != "" {
 		argv = append(argv, "--web", o.WebURL)

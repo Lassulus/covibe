@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
-	"github.com/lassulus/covibe/internal/collab"
 	"github.com/lassulus/covibe/internal/spool"
 )
 
@@ -36,6 +36,7 @@ type Config struct {
 type Server struct {
 	cfg   Config
 	fails *failLimiter
+	relay *Relay
 }
 
 // NewServer builds the dashboard server.
@@ -44,7 +45,7 @@ func NewServer(cfg Config) *Server {
 		cfg.KeepEnded = 20 * time.Second
 	}
 	// Throttle a client after 10 failed auth attempts per minute.
-	return &Server{cfg: cfg, fails: newFailLimiter(10, time.Minute)}
+	return &Server{cfg: cfg, fails: newFailLimiter(10, time.Minute), relay: newRelay(cfg.Store)}
 }
 
 // Handler returns the fully wired http.Handler (auth + routes).
@@ -67,10 +68,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/sessions/{id}", s.requireAPI(s.handleGetOne))
 	mux.HandleFunc("GET /api/v1/sessions/{id}/pane", s.requireAPI(s.handlePane))
 
+	// Collab relay: host = the omp plugin (per-session token, validated inside);
+	// guest = the browser viewer (OIDC session or API key). Neither redirects.
+	mux.HandleFunc("/collab/host/{id}", s.relay.ServeHost)
+	mux.HandleFunc("/collab/guest/{id}", s.requireAPI(s.relay.ServeGuest))
+
 	// Browser endpoints, gated by OIDC (redirects to login).
 	protected := http.NewServeMux()
 	protected.HandleFunc("/", s.handleIndex)
 	protected.HandleFunc("/qr", s.handleQR)
+	protected.HandleFunc("/s/{id}", s.handleViewer)
 	mux.Handle("/", s.cfg.Auth.Middleware(protected))
 
 	return securityHeaders(mux)
@@ -129,7 +136,6 @@ type sessionView struct {
 	StartedAt  time.Time `json:"startedAt"`
 }
 
-// viewOf projects a spool record into the API/UI shape, filling defaults.
 func (s *Server) viewOf(r spool.Record) sessionView {
 	v := sessionView{
 		ID:         r.ID,
@@ -139,18 +145,14 @@ func (s *Server) viewOf(r spool.Record) sessionView {
 		Mux:        r.Mux,
 		MuxSession: r.MuxSession,
 		Relay:      orDefault(r.Relay, s.cfg.Relay),
-		JoinLink:   r.JoinLink,
 		BrowserURL: r.BrowserURL,
 		ViewOnly:   r.ViewOnly,
+		Room:       r.ID,
 		StartedAt:  r.StartedAt,
 	}
-	// Fill in a browser URL from server defaults if the wrapper had no
-	// relay/web configured but we do.
-	if v.BrowserURL == "" && r.JoinLink != "" {
-		v.BrowserURL = collab.BrowserURL(r.JoinLink, v.Relay, s.cfg.WebURL)
-	}
-	if r.JoinLink != "" {
-		v.Room = collab.RoomID(r.JoinLink)
+	// Derive the viewer URL from the server's web base when the wrapper had none.
+	if v.BrowserURL == "" && s.cfg.WebURL != "" {
+		v.BrowserURL = strings.TrimSuffix(s.cfg.WebURL, "/") + "/s/" + r.ID
 	}
 	if v.BrowserURL != "" {
 		v.QR = qrDataURI(v.BrowserURL, 240)
@@ -199,7 +201,7 @@ func (s *Server) liveRecord(id string) (spool.Record, bool) {
 	return spool.Record{}, false
 }
 
-// handleGetOne returns a single session including its omp remote key (joinLink).
+// handleGetOne returns a single session including its browser viewer URL + QR.
 func (s *Server) handleGetOne(w http.ResponseWriter, r *http.Request) {
 	rec, ok := s.liveRecord(r.PathValue("id"))
 	if !ok {
@@ -223,7 +225,7 @@ func (s *Server) handlePane(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Query().Get("strip") == "1" {
-		out = collab.StripANSI(out)
+		out = stripANSI(out)
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
