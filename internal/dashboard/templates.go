@@ -34,7 +34,7 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
   .empty { color:var(--muted); text-align:center; padding:3rem; }
   .waiting { color:var(--start); font-size:.82rem; }
   .newform { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; margin-bottom:1.25rem; }
-  .newform input { background:#0b0e13; border:1px solid #2a2f37; color:var(--fg); border-radius:6px; padding:.5rem .6rem; font-size:.85rem; }
+  .newform input, .newform select { background:#0b0e13; border:1px solid #2a2f37; color:var(--fg); border-radius:6px; padding:.5rem .6rem; font-size:.85rem; }
   .newform input#newname { min-width:220px; }
   .newform input#newdir { min-width:160px; }
   .newerr { color:#f85149; font-size:.8rem; }
@@ -62,6 +62,18 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
     <input id="newname" name="name" placeholder="new session name" autocomplete="off"
            pattern="[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}" title="letters, digits, space . _ - (no leading . or -)" required>
     <input id="newdir" name="dir" placeholder="subdir (optional)" autocomplete="off">
+    <input id="newmodel" name="model" placeholder="model (optional)" autocomplete="off" list="modellist">
+    {{if .Models}}<datalist id="modellist">{{range .Models}}<option value="{{.}}">{{end}}</datalist>{{end}}
+    <select id="newthinking" name="thinking">
+      <option value="">thinking: default</option>
+      <option value="off">off</option>
+      <option value="minimal">minimal</option>
+      <option value="low">low</option>
+      <option value="medium">medium</option>
+      <option value="high">high</option>
+      <option value="xhigh">xhigh</option>
+      <option value="max">max</option>
+    </select>
     <button type="submit">start session</button>
     <span id="newerr" class="newerr"></span>
   </form>
@@ -92,6 +104,9 @@ function card(s){
   body += '<div class="meta">'+esc(s.dir||'')+'</div>';
   body += '<div class="meta">'+(s.mux?esc(s.mux)+(s.muxSession?' · '+esc(s.muxSession):''):'')+
           ' · since '+esc(started)+'</div>';
+  if (s.model||s.thinking){
+    body += '<div class="meta">'+esc(s.model||'default model')+(s.thinking?' · '+esc(s.thinking):'')+'</div>';
+  }
   if (s.browserUrl){
     body += '<div class="qr"><img alt="join QR" src="'+esc(s.qr)+'"></div>';
     body += '<div class="link"><input readonly value="'+esc(s.browserUrl)+'">'+
@@ -156,6 +171,8 @@ if (form){
         body: JSON.stringify({
           name: document.getElementById('newname').value,
           dir: document.getElementById('newdir').value,
+          model: document.getElementById('newmodel').value,
+          thinking: document.getElementById('newthinking').value,
         }),
       });
       if (!res.ok){ err.textContent = (await res.text()).trim() || ('error '+res.status); return; }

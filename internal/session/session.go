@@ -32,6 +32,8 @@ type Config struct {
 	Dir        string // working directory for omp
 	OmpBin     string // omp binary (default "omp")
 	OmpArgs    []string
+	Model      string // omp --model (optional)
+	Thinking   string // omp --thinking level (optional)
 	RelayHost  string // public host for guest links, e.g. "covibe.lassul.us"
 	WebClient  string // collab-web base for browser links, e.g. "https://my.omp.sh"
 	LocalRelay string // ws(s):// base the omp host connects to, e.g. "ws://127.0.0.1:8770"
@@ -65,6 +67,8 @@ func Run(cfg Config) error {
 		Mux:        cfg.Mux,
 		MuxSession: cfg.MuxSession,
 		MuxTab:     cfg.Name,
+		Model:      cfg.Model,
+		Thinking:   cfg.Thinking,
 		PID:        os.Getpid(),
 		Status:     spool.StatusStarting,
 		StartedAt:  time.Now(),
@@ -74,6 +78,12 @@ func Run(cfg Config) error {
 	// covibe-owned id. Requires a relay to connect to and a public host for the
 	// shareable links.
 	ompArgs := cfg.OmpArgs
+	if cfg.Thinking != "" {
+		ompArgs = append([]string{"--thinking", cfg.Thinking}, ompArgs...)
+	}
+	if cfg.Model != "" {
+		ompArgs = append([]string{"--model", cfg.Model}, ompArgs...)
+	}
 	var extraEnv []string
 	if cfg.LocalRelay != "" && cfg.RelayHost != "" {
 		room, err := collablink.Mint()

@@ -62,8 +62,30 @@ func resolveWorkspaceDir(root, name, sub string) (string, error) {
 }
 
 type createRequest struct {
-	Name string `json:"name"`
-	Dir  string `json:"dir"`
+	Name     string `json:"name"`
+	Dir      string `json:"dir"`
+	Model    string `json:"model"`
+	Thinking string `json:"thinking"`
+}
+
+// CreateSpec parameterizes a web/API-initiated session launch.
+type CreateSpec struct {
+	ID       string
+	Name     string
+	Dir      string
+	Model    string // omp --model (optional; may carry :thinking suffix)
+	Thinking string // omp --thinking level (optional)
+}
+
+// safeModel constrains a model selector to characters omp uses in provider/
+// model ids plus the optional :thinking suffix. It is passed as a distinct
+// argv element (no shell), but constrained to reject junk.
+var safeModel = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,127}$`)
+
+// thinkingLevels are omp's accepted --thinking values.
+var thinkingLevels = map[string]bool{
+	"off": true, "minimal": true, "low": true,
+	"medium": true, "high": true, "xhigh": true, "max": true,
 }
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -91,6 +113,16 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	model := strings.TrimSpace(req.Model)
+	if model != "" && !safeModel.MatchString(model) {
+		http.Error(w, "invalid model", http.StatusBadRequest)
+		return
+	}
+	thinking := strings.TrimSpace(req.Thinking)
+	if thinking != "" && !thinkingLevels[thinking] {
+		http.Error(w, "invalid thinking level", http.StatusBadRequest)
+		return
+	}
 	if s.cfg.MaxSessions > 0 {
 		if live, _ := s.cfg.Store.Live(s.cfg.KeepEnded); len(live) >= s.cfg.MaxSessions {
 			http.Error(w, "session limit reached", http.StatusTooManyRequests)
@@ -107,11 +139,11 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := newSessionID()
-	if err := s.cfg.Create(id, req.Name, dir); err != nil {
+	if err := s.cfg.Create(CreateSpec{ID: id, Name: req.Name, Dir: dir, Model: model, Thinking: thinking}); err != nil {
 		http.Error(w, "launch failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]string{"id": id, "name": req.Name, "dir": dir})
+	writeJSON(w, http.StatusCreated, map[string]string{"id": id, "name": req.Name, "dir": dir, "model": model, "thinking": thinking})
 }
 
 // newSessionID mints a spool id for a session created through the API, so the

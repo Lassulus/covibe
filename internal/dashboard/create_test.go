@@ -71,16 +71,16 @@ func TestHandleCreateDisabled(t *testing.T) {
 
 func TestHandleCreateLaunches(t *testing.T) {
 	dir := t.TempDir()
-	var gotID, gotName, gotDir string
+	var gotID, gotName, gotDir, gotModel, gotThinking string
 	s := NewServer(Config{
 		Auth:          testAuth(OIDCConfig{NoAuth: true}),
 		WorkspaceRoot: dir,
-		Create: func(id, name, d string) error {
-			gotID, gotName, gotDir = id, name, d
+		Create: func(sp CreateSpec) error {
+			gotID, gotName, gotDir, gotModel, gotThinking = sp.ID, sp.Name, sp.Dir, sp.Model, sp.Thinking
 			return nil
 		},
 	})
-	req := httptest.NewRequest("POST", "/api/v1/sessions", strings.NewReader(`{"name":"demo"}`))
+	req := httptest.NewRequest("POST", "/api/v1/sessions", strings.NewReader(`{"name":"demo","model":"anthropic/claude-opus-4-6","thinking":"high"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	s.handleCreate(rec, req)
@@ -93,6 +93,9 @@ func TestHandleCreateLaunches(t *testing.T) {
 	if gotName != "demo" || gotDir != filepath.Join(dir, "demo") {
 		t.Fatalf("launcher got name=%q dir=%q", gotName, gotDir)
 	}
+	if gotModel != "anthropic/claude-opus-4-6" || gotThinking != "high" {
+		t.Fatalf("launcher got model=%q thinking=%q", gotModel, gotThinking)
+	}
 	if fi, err := os.Stat(filepath.Join(dir, "demo")); err != nil || !fi.IsDir() {
 		t.Fatalf("workspace dir not created: %v", err)
 	}
@@ -104,7 +107,7 @@ func TestHandleCreateRejectsBadName(t *testing.T) {
 	s := NewServer(Config{
 		Auth:          testAuth(OIDCConfig{NoAuth: true}),
 		WorkspaceRoot: dir,
-		Create:        func(_, _, _ string) error { called = true; return nil },
+		Create:        func(CreateSpec) error { called = true; return nil },
 	})
 	req := httptest.NewRequest("POST", "/api/v1/sessions", strings.NewReader(`{"name":"../evil"}`))
 	req.Header.Set("Content-Type", "application/json")

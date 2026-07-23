@@ -125,7 +125,7 @@ func TestSessionCap(t *testing.T) {
 	s := NewServer(Config{
 		Store: store, Auth: testAuth(OIDCConfig{NoAuth: true}),
 		WorkspaceRoot: dir, MaxSessions: 1,
-		Create: func(_, _, _ string) error { return nil },
+		Create: func(CreateSpec) error { return nil },
 	})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/api/v1/sessions", strings.NewReader(`{"name":"x"}`))

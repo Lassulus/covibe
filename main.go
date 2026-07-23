@@ -100,6 +100,8 @@ func cmdSession(args []string) error {
 	muxName := fs.String("mux", env("COVIBE_MUX", ""), "multiplexer label (zellij|tmux)")
 	muxSession := fs.String("mux-session", env("COVIBE_MUX_SESSION", ""), "multiplexer session name")
 	stateDir := fs.String("state-dir", "", "spool directory")
+	model := fs.String("model", env("COVIBE_MODEL", ""), "omp model selector (optional)")
+	thinking := fs.String("thinking", env("COVIBE_THINKING", ""), "omp thinking level (optional)")
 	_ = fs.Parse(args)
 
 	if *dir == "" {
@@ -117,6 +119,8 @@ func cmdSession(args []string) error {
 		Dir:        *dir,
 		OmpBin:     *omp,
 		OmpArgs:    fs.Args(),
+		Model:      *model,
+		Thinking:   *thinking,
 		RelayHost:  *relayHost,
 		WebClient:  *webClient,
 		LocalRelay: *localRelay,
@@ -139,6 +143,8 @@ func cmdStart(args []string) error {
 	omp := fs.String("omp", env("COVIBE_OMP", "omp"), "omp binary")
 	stateDir := fs.String("state-dir", "", "spool directory")
 	dryRun := fs.Bool("dry-run", false, "print the mux command instead of running it")
+	model := fs.String("model", env("COVIBE_MODEL", ""), "omp model selector (optional)")
+	thinking := fs.String("thinking", env("COVIBE_THINKING", ""), "omp thinking level (optional)")
 	// Allow "covibe start <name> [flags]": pop a leading non-flag arg as the
 	// name so flags after it are still parsed (Go's flag stops at the first
 	// positional otherwise).
@@ -173,6 +179,8 @@ func cmdStart(args []string) error {
 		LocalRelay: *localRelay,
 		Omp:        *omp,
 		StateDir:   *stateDir,
+		Model:      *model,
+		Thinking:   *thinking,
 	}
 	if *dryRun {
 		argv, err := launch.Command(opts)
@@ -248,6 +256,7 @@ func cmdServe(args []string) error {
 	maxSessions := fs.Int("max-sessions", envInt("COVIBE_MAX_SESSIONS", 0), "cap on concurrent live sessions (0 = unlimited)")
 	localRelay := fs.String("local-relay", env("COVIBE_LOCAL_RELAY", ""), "ws(s):// relay base the omp host connects to (default ws://<addr>)")
 	webRoot := fs.String("web-root", env("COVIBE_WEB_ROOT", ""), "dir of collab-web static assets served at /c/ (self-hosted client)")
+	models := fs.String("models", env("COVIBE_MODELS", ""), "comma-separated model ids for the create-form datalist")
 	_ = fs.Parse(args)
 	if *localRelay == "" {
 		*localRelay = "ws://" + *addr
@@ -289,13 +298,16 @@ func cmdServe(args []string) error {
 		WorkspaceRoot: *workspace,
 		APIKeys:       keys,
 		MaxSessions:   *maxSessions,
+		Models:        splitList(*models),
 	}
 	if *workspace != "" {
-		cfg.Create = func(id, name, dir string) error {
+		cfg.Create = func(sp dashboard.CreateSpec) error {
 			_, err := launch.Launch(launch.Options{
-				ID:         id,
-				Name:       name,
-				Dir:        dir,
+				ID:         sp.ID,
+				Name:       sp.Name,
+				Dir:        sp.Dir,
+				Model:      sp.Model,
+				Thinking:   sp.Thinking,
 				Mux:        *muxName,
 				MuxSession: *muxSession,
 				RelayHost:  *relayHost,

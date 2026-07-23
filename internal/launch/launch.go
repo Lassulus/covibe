@@ -25,6 +25,8 @@ type Options struct {
 	LocalRelay string // ws(s):// base the omp host connects to
 	Omp        string
 	StateDir   string
+	Model      string // omp --model (optional; may carry :thinking suffix)
+	Thinking   string // omp --thinking level (optional)
 }
 
 // inner builds the `covibe session ...` argv that the mux runs in the pane.
@@ -60,6 +62,12 @@ func (o Options) inner(id, sess string) ([]string, error) {
 	}
 	if o.StateDir != "" {
 		argv = append(argv, "--state-dir", o.StateDir)
+	}
+	if o.Model != "" {
+		argv = append(argv, "--model", o.Model)
+	}
+	if o.Thinking != "" {
+		argv = append(argv, "--thinking", o.Thinking)
 	}
 	argv = append(argv, "--id", id)
 	return argv, nil

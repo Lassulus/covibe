@@ -45,6 +45,7 @@ let
       COVIBE_ADDR = d.addr;
       COVIBE_WORKSPACE = d.workspaceRoot;
       COVIBE_MAX_SESSIONS = toString d.maxSessions;
+      COVIBE_MODELS = lib.concatStringsSep "," d.models;
       COVIBE_API_KEYS_FILE = d.apiKeysFile;
       COVIBE_OIDC_ISSUER = d.oidc.issuer;
       COVIBE_OIDC_CLIENT_ID = d.oidc.clientId;
@@ -225,6 +226,19 @@ in
         type = lib.types.int;
         default = 32;
         description = "Cap on concurrent live sessions creatable via the API/UI; 0 disables the cap.";
+      };
+
+      models = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [
+          "anthropic/claude-opus-4-6"
+          "openai/gpt-5.3-codex"
+        ];
+        description = ''
+          Model ids offered as a datalist in the create form (COVIBE_MODELS).
+          Empty leaves the model field as free-text.
+        '';
       };
 
       openFirewall = lib.mkOption {

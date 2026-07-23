@@ -31,6 +31,8 @@ type Record struct {
 	Mux        string    `json:"mux,omitempty"`        // "zellij" | "tmux"
 	MuxSession string    `json:"muxSession,omitempty"` // multiplexer session name
 	MuxTab     string    `json:"muxTab,omitempty"`     // tab/window name
+	Model      string    `json:"model,omitempty"`      // omp --model selector
+	Thinking   string    `json:"thinking,omitempty"`   // omp --thinking level
 	PID        int       `json:"pid"`                  // pid of the covibe session wrapper
 	Status     string    `json:"status"`
 	Relay      string    `json:"relay,omitempty"`      // ws(s):// relay used for /collab

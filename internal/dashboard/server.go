@@ -24,10 +24,12 @@ type Config struct {
 	// with the given id, named `name`, in `dir` (validated + clamped to
 	// WorkspaceRoot). The id lets callers immediately GET the new session.
 	WorkspaceRoot string
-	Create        func(id, name, dir string) error
+	Create        func(CreateSpec) error
 	// MaxSessions caps concurrent live sessions creatable through the API/UI;
 	// 0 means unlimited.
 	MaxSessions int
+	// Models is the optional model-id datalist offered by the create form.
+	Models []string
 
 	// APIKeys authorizes the machine-facing /api/v1 surface. Empty means no key
 	// is accepted there (only a logged-in browser session is).
@@ -135,6 +137,8 @@ type sessionView struct {
 	Status     string    `json:"status"`
 	Mux        string    `json:"mux,omitempty"`
 	MuxSession string    `json:"muxSession,omitempty"`
+	Model      string    `json:"model,omitempty"`
+	Thinking   string    `json:"thinking,omitempty"`
 	Relay      string    `json:"relay,omitempty"`
 	JoinLink   string    `json:"joinLink,omitempty"`
 	BrowserURL string    `json:"browserUrl,omitempty"`
@@ -152,6 +156,8 @@ func (s *Server) viewOf(r spool.Record) sessionView {
 		Status:     r.Status,
 		Mux:        r.Mux,
 		MuxSession: r.MuxSession,
+		Model:      r.Model,
+		Thinking:   r.Thinking,
 		JoinLink:   r.JoinLink,
 		BrowserURL: r.BrowserURL,
 		ViewOnly:   r.ViewOnly,
@@ -286,8 +292,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		User      Identity
 		Relay     string
 		CanCreate bool
+		Models    []string
 		Nonce     string
-	}{User: id, Relay: s.cfg.RelayHost, CanCreate: s.cfg.Create != nil && s.cfg.WorkspaceRoot != "", Nonce: nonce}
+	}{User: id, Relay: s.cfg.RelayHost, CanCreate: s.cfg.Create != nil && s.cfg.WorkspaceRoot != "", Models: s.cfg.Models, Nonce: nonce}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Security-Policy",
 		"default-src 'self'; script-src 'nonce-"+nonce+"'; style-src 'nonce-"+nonce+"'; "+
