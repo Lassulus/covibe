@@ -182,10 +182,11 @@ func cmdStart(args []string) error {
 		fmt.Println(strings.Join(argv, " "))
 		return nil
 	}
-	if err := launch.Launch(opts); err != nil {
+	sess, err := launch.Launch(opts)
+	if err != nil {
 		return err
 	}
-	fmt.Printf("started %q in %s session %q\n", *name, *muxName, *muxSession)
+	fmt.Printf("started %q in %s session %q\n", *name, *muxName, sess)
 	return nil
 }
 
@@ -291,7 +292,7 @@ func cmdServe(args []string) error {
 	}
 	if *workspace != "" {
 		cfg.Create = func(id, name, dir string) error {
-			return launch.Launch(launch.Options{
+			_, err := launch.Launch(launch.Options{
 				ID:         id,
 				Name:       name,
 				Dir:        dir,
@@ -303,6 +304,7 @@ func cmdServe(args []string) error {
 				Omp:        *ompBin,
 				StateDir:   store.Dir(),
 			})
+			return err
 		}
 	}
 	srv := dashboard.NewServer(cfg)

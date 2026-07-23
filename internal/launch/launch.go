@@ -5,7 +5,9 @@
 package launch
 
 import (
+	"fmt"
 	"os"
+	"time"
 
 	"github.com/lassulus/covibe/internal/mux"
 )
@@ -26,7 +28,7 @@ type Options struct {
 }
 
 // inner builds the `covibe session ...` argv that the mux runs in the pane.
-func (o Options) inner() ([]string, error) {
+func (o Options) inner(id, sess string) ([]string, error) {
 	self := o.Self
 	if self == "" {
 		exe, err := os.Executable()
@@ -45,7 +47,7 @@ func (o Options) inner() ([]string, error) {
 		"--dir", o.Dir,
 		"--omp", omp,
 		"--mux", o.Mux,
-		"--mux-session", o.MuxSession,
+		"--mux-session", sess,
 	}
 	if o.RelayHost != "" {
 		argv = append(argv, "--relay-host", o.RelayHost)
@@ -59,41 +61,50 @@ func (o Options) inner() ([]string, error) {
 	if o.StateDir != "" {
 		argv = append(argv, "--state-dir", o.StateDir)
 	}
-	if o.ID != "" {
-		argv = append(argv, "--id", o.ID)
-	}
+	argv = append(argv, "--id", id)
 	return argv, nil
 }
 
-func (o Options) spec() (mux.Launcher, mux.Spec, error) {
+func (o Options) spec() (mux.Launcher, mux.Spec, string, error) {
 	l, err := mux.For(o.Mux)
 	if err != nil {
-		return nil, mux.Spec{}, err
+		return nil, mux.Spec{}, "", err
 	}
-	inner, err := o.inner()
+	id, sess := o.resolveSession()
+	inner, err := o.inner(id, sess)
 	if err != nil {
-		return nil, mux.Spec{}, err
+		return nil, mux.Spec{}, "", err
 	}
-	return l, mux.Spec{Name: o.Name, Dir: o.Dir, Session: o.MuxSession, InnerArgv: inner}, nil
+	return l, mux.Spec{Name: o.Name, Dir: o.Dir, Session: sess, InnerArgv: inner}, sess, nil
+}
+
+// resolveSession fills a stable id (generating one when empty) and the derived
+// per-session mux session name.
+func (o Options) resolveSession() (id, sess string) {
+	id = o.ID
+	if id == "" {
+		id = fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())
+	}
+	return id, mux.SessionName(o.MuxSession, o.Name, id)
 }
 
 // Command returns the multiplexer argv without running it (dry-run).
 func Command(o Options) ([]string, error) {
-	l, spec, err := o.spec()
+	l, spec, _, err := o.spec()
 	if err != nil {
 		return nil, err
 	}
 	return l.Command(spec)
 }
 
-// Launch ensures the multiplexer session exists, then opens the tab.
-func Launch(o Options) error {
-	l, spec, err := o.spec()
+// Launch ensures the (per-session) multiplexer session exists, then opens it.
+func Launch(o Options) (string, error) {
+	l, spec, sess, err := o.spec()
 	if err != nil {
-		return err
+		return "", err
 	}
-	if err := l.Ensure(o.MuxSession); err != nil {
-		return err
+	if err := l.Ensure(sess); err != nil {
+		return sess, err
 	}
-	return l.Launch(spec)
+	return sess, l.Launch(spec)
 }

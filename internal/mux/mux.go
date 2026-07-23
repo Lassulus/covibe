@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Spec describes a session to launch.
@@ -28,6 +29,9 @@ type Launcher interface {
 	Command(Spec) ([]string, error)
 	// Launch runs the multiplexer command.
 	Launch(Spec) error
+	// Kill tears down the multiplexer session (best-effort cleanup after the
+	// session's process has been signalled).
+	Kill(session string) error
 }
 
 // For returns the launcher for a backend name.
@@ -54,6 +58,68 @@ func run(argv []string) error {
 	return nil
 }
 
+// runIn is run() with an explicit working directory. `zellij attach
+// --create-background` daemonizes into the current cwd and fails with EACCES
+// when that dir is unreadable by the user, so we launch it from a safe dir.
+func runIn(dir string, argv []string) error {
+	if len(argv) == 0 {
+		return fmt.Errorf("empty command")
+	}
+	cmd := exec.Command(argv[0], argv[1:]...) // #nosec G204 -- argv built from validated name + operator config; no shell
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %w: %s", argv[0], err, out)
+	}
+	return nil
+}
+
+// SessionName derives a unique, readable multiplexer session name for one
+// covibe session: "<name-or-base>-<shortid>". The short id keeps sessions
+// distinct even when two share a display name; each covibe session thus gets
+// its own mux session (no shared session, no stacked panes).
+func SessionName(base, name, id string) string {
+	n := sanitizeMux(name)
+	if n == "" {
+		n = sanitizeMux(base)
+	}
+	if n == "" {
+		n = "covibe"
+	}
+	if s := shortID(id); s != "" {
+		return n + "-" + s
+	}
+	return n
+}
+
+func sanitizeMux(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func shortID(id string) string {
+	s := sanitizeMux(id)
+	if len(s) > 8 {
+		s = s[len(s)-8:]
+	}
+	return strings.Trim(s, "-_")
+}
+
+// Kill tears down a backend's session by name (best-effort).
+func Kill(backend, session string) {
+	if l, err := For(backend); err == nil {
+		_ = l.Kill(session)
+	}
+}
+
 // --- zellij -----------------------------------------------------------------
 
 type zellij struct{}
@@ -77,32 +143,73 @@ func (zellij) Command(s Spec) ([]string, error) {
 	return argv, nil
 }
 
-// Ensure creates a backgrounded zellij session if it does not already exist,
-// so `run` has a session to target without a client being attached.
+// sessionState classifies a zellij session for Ensure.
+type sessionState int
+
+const (
+	stateNone sessionState = iota
+	stateLive
+	stateExited
+)
+
+// Ensure makes the target session exist and be *live*. A live session of the
+// same name is reused; a resurrectable EXITED corpse (which `list-sessions`
+// still reports, shadowing a fresh session and making `run` fail with "no
+// active session") is deleted first; then a detached session is created.
 func (zellij) Ensure(session string) error {
 	if session == "" {
 		return fmt.Errorf("zellij: session name required")
 	}
-	if zellijHasSession(session) {
+	switch zellijState(session) {
+	case stateLive:
 		return nil
+	case stateExited:
+		_ = run([]string{"zellij", "delete-session", session, "--force"})
 	}
-	// --create-background starts the session's server without attaching a client.
-	return run([]string{"zellij", "attach", "--create-background", session})
+	// Run from "/" so an unreadable service WorkingDirectory can't trip the
+	// daemonize chdir (EACCES).
+	if err := runIn("/", []string{"zellij", "attach", "--create-background", session}); err != nil {
+		return err
+	}
+	// create-background returns before the session is ready for `run`; wait.
+	for i := 0; i < 50; i++ {
+		if zellijState(session) == stateLive {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return fmt.Errorf("zellij: session %q did not become live", session)
 }
 
-func zellijHasSession(name string) bool {
-	// `list-sessions -ns` prints one bare session name per line (no ANSI, no
-	// "current" markers). Match an exact line.
-	out, err := exec.Command("zellij", "list-sessions", "-ns").Output()
+// zellijState reports whether a session is live, exited (resurrectable), or
+// absent. `list-sessions -n` prints one line per session with no ANSI; exited
+// sessions carry an "(EXITED..." suffix.
+func zellijState(name string) sessionState {
+	out, err := exec.Command("zellij", "list-sessions", "-n").Output()
 	if err != nil {
-		return false
+		return stateNone
 	}
 	for _, line := range strings.Split(string(out), "\n") {
-		if strings.TrimSpace(line) == name {
-			return true
+		fields := strings.Fields(line)
+		if len(fields) == 0 || fields[0] != name {
+			continue
 		}
+		if strings.Contains(line, "EXITED") {
+			return stateExited
+		}
+		return stateLive
 	}
-	return false
+	return stateNone
+}
+
+// Kill terminates the session and clears its resurrectable corpse.
+func (zellij) Kill(session string) error {
+	if session == "" {
+		return nil
+	}
+	_ = run([]string{"zellij", "kill-session", session})
+	_ = run([]string{"zellij", "delete-session", session, "--force"})
+	return nil
 }
 
 func (z zellij) Launch(s Spec) error {
@@ -121,27 +228,29 @@ type tmux struct{}
 // new-session) when it is missing, and the tmux server daemonizes itself.
 func (tmux) Ensure(_ string) error { return nil }
 
-// Command creates the session with the pane command if it does not yet exist,
-// otherwise opens a new window in it. tmux runs the argv as the pane's process
-// directly (no shell), so no quoting games are needed.
+// Command creates a fresh detached tmux session running the pane command
+// directly (no shell, so no quoting games). Each covibe session gets its own
+// tmux session.
 func (tmux) Command(s Spec) ([]string, error) {
 	if s.Session == "" {
 		return nil, fmt.Errorf("tmux: session name required")
 	}
-	if !tmuxHasSession(s.Session) {
-		argv := []string{"tmux", "new-session", "-d", "-s", s.Session, "-n", s.Name}
-		if s.Dir != "" {
-			argv = append(argv, "-c", s.Dir)
-		}
-		argv = append(argv, "--")
-		return append(argv, s.InnerArgv...), nil
-	}
-	argv := []string{"tmux", "new-window", "-t", s.Session, "-n", s.Name}
+	argv := []string{"tmux", "new-session", "-d", "-s", s.Session, "-n", s.Name}
 	if s.Dir != "" {
 		argv = append(argv, "-c", s.Dir)
 	}
 	argv = append(argv, "--")
 	return append(argv, s.InnerArgv...), nil
+}
+
+// Kill terminates the tmux session.
+func (tmux) Kill(session string) error {
+	if session == "" {
+		return nil
+	}
+	// #nosec G204 -- fixed argv; session name only, no shell
+	_ = exec.Command("tmux", "kill-session", "-t", "="+session).Run()
+	return nil
 }
 
 func (t tmux) Launch(s Spec) error {
@@ -150,8 +259,4 @@ func (t tmux) Launch(s Spec) error {
 		return err
 	}
 	return run(argv)
-}
-
-func tmuxHasSession(name string) bool {
-	return exec.Command("tmux", "has-session", "-t", "="+name).Run() == nil // #nosec G204 -- fixed argv; session name only, no shell
 }

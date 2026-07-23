@@ -7,6 +7,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lassulus/covibe/internal/mux"
 	"github.com/lassulus/covibe/internal/spool"
 )
 
@@ -179,6 +180,7 @@ func (s *Server) handleKill(w http.ResponseWriter, r *http.Request) {
 	if rec.PID > 0 {
 		_ = syscall.Kill(rec.PID, syscall.SIGTERM)
 	}
+	mux.Kill(rec.Mux, rec.MuxSession)
 	rec.Status = spool.StatusEnded
 	_ = s.cfg.Store.Save(&rec)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "killed", "id": rec.ID})
