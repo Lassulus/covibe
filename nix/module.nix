@@ -33,14 +33,20 @@ let
     COVIBE_MUX = cfg.mux;
     COVIBE_MUX_SESSION = cfg.muxSession;
     OMP_AUTH_BROKER_URL = cfg.authBrokerUrl;
-    # Pin the multiplexer socket dirs so dashboard-created sessions and the
-    # user's interactive `zellij attach` / `tmux attach` share one server.
+  };
+
+  # Multiplexer control-socket dirs. Shared ONLY by the dashboard service and
+  # the covibe user's interactive shells — NEVER globally: a global export
+  # redirects every other user's tmux/zellij onto ${cfg.socketDir}, which they
+  # cannot write, breaking their login shell.
+  socketEnv = {
     ZELLIJ_SOCKET_DIR = "${cfg.socketDir}/zellij";
     TMUX_TMPDIR = cfg.socketDir;
   };
 
   dashboardEnv =
     sharedEnv
+    // socketEnv
     // lib.filterAttrs (_: v: v != null && v != "") {
       COVIBE_ADDR = d.addr;
       COVIBE_WORKSPACE = d.workspaceRoot;
@@ -151,8 +157,9 @@ in
       defaultText = lib.literalExpression "config.services.covibe.stateDir";
       description = ''
         Directory pinning the multiplexer control sockets (ZELLIJ_SOCKET_DIR =
-        <socketDir>/zellij, TMUX_TMPDIR = <socketDir>). Exported to both the
-        dashboard service and interactive shells so web-created sessions and the
+        <socketDir>/zellij, TMUX_TMPDIR = <socketDir>). Set on the dashboard
+        service and the covibe user's interactive shells (never globally, which
+        would break other users' tmux/zellij) so web-created sessions and that
         user's `zellij attach`/`tmux attach` share one server.
       '';
     };
@@ -346,6 +353,18 @@ in
 
     environment.systemPackages = lib.mkIf cfg.installGlobally ([ cfg.package ] ++ cfg.extraPackages);
     environment.variables = lib.mkIf cfg.installGlobally sharedEnv;
+
+    # The covibe user shares the dashboard's multiplexer server so `zellij
+    # attach` / `tmux attach` reach web-created sessions. Scope the socket dirs
+    # to that user's interactive shells; a global export (environment.variables)
+    # would point every other user's tmux/zellij at ${cfg.socketDir}, which only
+    # the covibe user can write — breaking their login shell.
+    environment.interactiveShellInit = lib.mkIf cfg.installGlobally ''
+      if [ "$(id -un)" = ${lib.escapeShellArg cfg.user} ]; then
+        export ZELLIJ_SOCKET_DIR=${lib.escapeShellArg socketEnv.ZELLIJ_SOCKET_DIR}
+        export TMUX_TMPDIR=${lib.escapeShellArg socketEnv.TMUX_TMPDIR}
+      fi
+    '';
 
     systemd.tmpfiles.rules = lib.unique (
       [
