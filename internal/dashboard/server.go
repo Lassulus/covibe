@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -28,8 +29,11 @@ type Config struct {
 	// MaxSessions caps concurrent live sessions creatable through the API/UI;
 	// 0 means unlimited.
 	MaxSessions int
-	// Models is the optional model-id datalist offered by the create form.
+	// Models optionally restricts the create-form dropdown to these selectors
+	// (COVIBE_MODELS); empty offers every auth-resolvable omp model.
 	Models []string
+	// OmpBin is the omp binary used to enumerate available models.
+	OmpBin string
 
 	// APIKeys authorizes the machine-facing /api/v1 surface. Empty means no key
 	// is accepted there (only a logged-in browser session is).
@@ -38,9 +42,12 @@ type Config struct {
 
 // Server serves the OIDC-protected session dashboard.
 type Server struct {
-	cfg   Config
-	fails *failLimiter
-	relay *Relay
+	cfg      Config
+	fails    *failLimiter
+	relay    *Relay
+	mmu      sync.Mutex
+	models   []ModelOption
+	modelsAt time.Time
 }
 
 // NewServer builds the dashboard server.
@@ -72,6 +79,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/sessions/{id}", s.requireAPI(s.handleGetOne))
 	mux.HandleFunc("GET /api/v1/sessions/{id}/pane", s.requireAPI(s.handlePane))
 	mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.requireAPI(s.handleKill))
+	mux.HandleFunc("GET /api/v1/models", s.requireAPI(s.handleModels))
 
 	// Content-blind collab relay: omp host + `omp join`/collab-web guests. No
 	// auth — possession of the room key (in the link fragment) is the trust

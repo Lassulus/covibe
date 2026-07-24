@@ -62,8 +62,7 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
     <input id="newname" name="name" placeholder="new session name" autocomplete="off"
            pattern="[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}" title="letters, digits, space . _ - (no leading . or -)" required>
     <input id="newdir" name="dir" placeholder="subdir (optional)" autocomplete="off">
-    <input id="newmodel" name="model" placeholder="model (optional)" autocomplete="off" list="modellist">
-    {{if .Models}}<datalist id="modellist">{{range .Models}}<option value="{{.}}">{{end}}</datalist>{{end}}
+    <select id="newmodel" name="model"><option value="">default model</option></select>
     <select id="newthinking" name="thinking">
       <option value="">thinking: default</option>
       <option value="off">off</option>
@@ -158,6 +157,42 @@ async function refresh(){
 
 const form = document.getElementById('newform');
 if (form){
+  const modelSel = document.getElementById('newmodel');
+  const thinkSel = document.getElementById('newthinking');
+  const THINK_ALL = ['off','minimal','low','medium','high','xhigh','max'];
+  const modelThinking = {};
+  function fillThinking(levels){
+    const cur = thinkSel.value;
+    thinkSel.replaceChildren();
+    const def = document.createElement('option'); def.value=''; def.textContent='thinking: default';
+    thinkSel.appendChild(def);
+    (levels && levels.length ? levels : THINK_ALL).forEach(l=>{
+      const o=document.createElement('option'); o.value=l; o.textContent=l; thinkSel.appendChild(o);
+    });
+    thinkSel.value = Array.from(thinkSel.options).some(o=>o.value===cur) ? cur : '';
+  }
+  modelSel.addEventListener('change', ()=> fillThinking(modelThinking[modelSel.value]));
+  fillThinking(THINK_ALL);
+  (async ()=>{
+    try {
+      const res = await fetch('/api/v1/models', {headers:{'Accept':'application/json'}});
+      if (!res.ok) return;
+      const models = await res.json();
+      const groups = {};
+      (models||[]).forEach(m=>{
+        modelThinking[m.selector] = m.thinking || [];
+        (groups[m.provider] = groups[m.provider] || []).push(m);
+      });
+      Object.keys(groups).sort().forEach(p=>{
+        const og = document.createElement('optgroup'); og.label = p;
+        groups[p].forEach(m=>{
+          const o = document.createElement('option'); o.value = m.selector; o.textContent = m.name || m.selector;
+          og.appendChild(o);
+        });
+        modelSel.appendChild(og);
+      });
+    } catch(e){ /* leave default-only select */ }
+  })();
   form.addEventListener('submit', async (e)=>{
     e.preventDefault();
     const err = document.getElementById('newerr');

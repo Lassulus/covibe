@@ -299,6 +299,7 @@ func cmdServe(args []string) error {
 		APIKeys:       keys,
 		MaxSessions:   *maxSessions,
 		Models:        splitList(*models),
+		OmpBin:        *ompBin,
 	}
 	if *workspace != "" {
 		cfg.Create = func(sp dashboard.CreateSpec) error {
