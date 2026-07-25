@@ -103,7 +103,6 @@ func cmdSession(args []string) error {
 	model := fs.String("model", env("COVIBE_MODEL", ""), "omp model selector (optional)")
 	thinking := fs.String("thinking", env("COVIBE_THINKING", ""), "omp thinking level (optional)")
 	dashboardURL := fs.String("dashboard", env("COVIBE_DASHBOARD", ""), "dashboard base URL for remote registration; enables remote mode")
-	apiKey := fs.String("api-key", env("COVIBE_API_KEY", ""), "dashboard API key (remote mode)")
 	_ = fs.Parse(args)
 
 	if *dir == "" {
@@ -126,7 +125,7 @@ func cmdSession(args []string) error {
 		MuxSession: *muxSession,
 	}
 	if *dashboardURL != "" {
-		cfg.Sink = session.NewRemoteSink(*dashboardURL, *apiKey)
+		cfg.Sink = session.NewRemoteSink(*dashboardURL)
 	} else {
 		store, err := spool.Open(*stateDir)
 		if err != nil {

@@ -25,18 +25,13 @@ func TestRemoteSinkAgainstDashboard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("auth: %v", err)
 	}
-	keys, err := dashboard.LoadAPIKeys("testkey", "")
-	if err != nil {
-		t.Fatalf("keys: %v", err)
-	}
 	srv := httptest.NewServer(dashboard.NewServer(dashboard.Config{
-		Auth:    auth,
-		Store:   store,
-		APIKeys: keys,
+		Auth:  auth,
+		Store: store,
 	}).Handler())
 	defer srv.Close()
 
-	sink := NewRemoteSink(srv.URL, "testkey")
+	sink := NewRemoteSink(srv.URL)
 	rec := &spool.Record{Name: "itest", RoomID: "abcdefghij123"}
 	if err := sink.Register(rec); err != nil {
 		t.Fatalf("register: %v", err)

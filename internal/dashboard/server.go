@@ -81,8 +81,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/sessions/{id}/pane", s.requireAPI(s.handlePane))
 	mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.requireAPI(s.handleKill))
 	mux.HandleFunc("GET /api/v1/models", s.requireAPI(s.handleModels))
-	mux.HandleFunc("POST /api/v1/sessions/register", s.requireAPI(s.handleRegister))
-	mux.HandleFunc("POST /api/v1/sessions/{id}/pane", s.requireAPI(s.handleRemotePane))
+	// Open announce surface (no key): any machine can register the session it is
+	// hosting (name + collab links) and push its pane. An announcement is kept
+	// only while the announcer keeps heartbeating (pane push) and GC'd when it
+	// stops; the server-minted session id is the capability for pushing a given
+	// session's pane. Killing (DELETE) stays gated — only the dashboard owner.
+	mux.HandleFunc("POST /api/v1/sessions/register", s.handleRegister)
+	mux.HandleFunc("POST /api/v1/sessions/{id}/pane", s.handleRemotePane)
 
 	// Content-blind collab relay: omp host + `omp join`/collab-web guests. No
 	// auth — possession of the room key (in the link fragment) is the trust

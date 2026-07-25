@@ -15,23 +15,21 @@ import (
 	"github.com/lassulus/covibe/internal/spool"
 )
 
-// RemoteSink registers a session with a covibe dashboard over its REST API and
-// keeps it live by periodically pushing the pane snapshot (which doubles as a
-// heartbeat). Used when the wrapper runs on a different machine than the
-// dashboard, so the session still shows up in the overview.
+// RemoteSink announces a session to a covibe dashboard over its (keyless) REST
+// API and keeps it listed by periodically pushing the pane snapshot, which
+// doubles as a heartbeat. Used when the wrapper runs on a different machine than
+// the dashboard, so the session still shows up in the overview. The dashboard
+// GCs the announcement once the heartbeat stops.
 type RemoteSink struct {
 	base     string // dashboard base URL, e.g. https://covibe.lassul.us
-	apiKey   string
 	interval time.Duration
 	client   *http.Client
 }
 
-// NewRemoteSink builds a sink targeting the dashboard at base, authenticating
-// with apiKey.
-func NewRemoteSink(base, apiKey string) *RemoteSink {
+// NewRemoteSink builds a sink targeting the dashboard at base.
+func NewRemoteSink(base string) *RemoteSink {
 	return &RemoteSink{
 		base:     strings.TrimSuffix(base, "/"),
-		apiKey:   apiKey,
 		interval: 4 * time.Second,
 		client:   &http.Client{Timeout: 15 * time.Second},
 	}
@@ -46,16 +44,14 @@ func (s *RemoteSink) do(ctx context.Context, method, path string, body []byte) (
 	if err != nil {
 		return nil, err
 	}
-	if s.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+s.apiKey)
-	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/octet-stream")
 	}
 	return s.client.Do(req)
 }
 
-// Register creates the dashboard record and adopts the server-minted id.
+// Register creates the dashboard record and adopts the server-minted id (which
+// is the capability for pushing this session's pane).
 func (s *RemoteSink) Register(rec *spool.Record) error {
 	rec.Remote = true
 	rec.PID = 0
@@ -79,9 +75,6 @@ func (s *RemoteSink) Register(rec *spool.Record) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.base+"/api/v1/sessions/register", bytes.NewReader(reqBody))
 	if err != nil {
 		return err
-	}
-	if s.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+s.apiKey)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.client.Do(req)
@@ -167,14 +160,9 @@ func (s *RemoteSink) heartbeat(ctx context.Context, id string, body []byte) (sto
 	return out.Stop, nil
 }
 
-// End deregisters the session (best-effort).
-func (s *RemoteSink) End(rec *spool.Record) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if resp, err := s.do(ctx, http.MethodDelete, "/api/v1/sessions/"+rec.ID, nil); err == nil {
-		_ = resp.Body.Close()
-	}
-}
+// End is a no-op: deregistration is left to the dashboard's GC, which drops the
+// announcement once the heartbeat stops (killing requires the dashboard owner).
+func (s *RemoteSink) End(_ *spool.Record) {}
 
 func hashBytes(b []byte) uint64 {
 	h := fnv.New64a()
