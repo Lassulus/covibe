@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -14,6 +15,11 @@ import (
 
 	"github.com/lassulus/covibe/internal/spool"
 )
+
+// errSessionGone marks a heartbeat the dashboard rejected because it no longer
+// knows this session (it restarted, or GC pruned the record while it was down).
+// The watch loop recovers by re-registering.
+var errSessionGone = errors.New("remote session no longer registered")
 
 // RemoteSink announces a session to a covibe dashboard over its (keyless) REST
 // API and keeps it listed by periodically pushing the pane snapshot, which
@@ -124,8 +130,16 @@ func (s *RemoteSink) Watch(rec *spool.Record, pane *paneBuffer) (<-chan struct{}
 					body = snap // include the pane only when it changed
 				}
 				stop, err := s.heartbeat(ctx, rec.ID, body)
-				if err == nil {
+				switch {
+				case err == nil:
 					lastHash, sent = h, true
+				case errors.Is(err, errSessionGone):
+					// Dashboard forgot us (restarted, or GC pruned the stale
+					// record while it was down): re-announce and adopt the new
+					// id, then resend the pane on the next tick.
+					if s.Register(rec) == nil {
+						sent = false
+					}
 				}
 				if stop {
 					close(killed)
@@ -150,6 +164,9 @@ func (s *RemoteSink) heartbeat(ctx context.Context, id string, body []byte) (sto
 		return false, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return false, errSessionGone
+	}
 	if resp.StatusCode != http.StatusOK {
 		return false, fmt.Errorf("heartbeat: %s", resp.Status)
 	}
