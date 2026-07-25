@@ -32,9 +32,23 @@ import (
 type Relay struct {
 	mu    sync.Mutex
 	rooms map[string]*relayRoom
+	// Keepalive: omp and the coder/websocket lib send no application-level
+	// pings, so an idle collab connection behind a reverse proxy (nginx's
+	// default proxy_read_timeout is 60s) gets severed, triggering omp's
+	// reconnect loop. Pinging every peer keeps intermediaries warm and detects
+	// dead/half-open peers so their room is freed promptly (a stale host
+	// otherwise blocks reconnect with close 4009). Overridable in tests.
+	pingInterval time.Duration
+	pingTimeout  time.Duration
 }
 
-func newRelay() *Relay { return &Relay{rooms: map[string]*relayRoom{}} }
+func newRelay() *Relay {
+	return &Relay{
+		rooms:        map[string]*relayRoom{},
+		pingInterval: 30 * time.Second,
+		pingTimeout:  10 * time.Second,
+	}
+}
 
 const relayEnvHeader = 4
 
@@ -74,6 +88,29 @@ func (c *relayConn) writeLoop(ctx context.Context) {
 	}
 }
 
+// keepAlive pings the peer on a fixed interval, tearing the connection down
+// when a ping fails (write error or no pong within the timeout). CloseNow makes
+// the blocked Read in the serve loop return, running its cleanup. Ping is safe
+// concurrently with the in-flight Read/Write (see coder/websocket docs).
+func (c *relayConn) keepAlive(ctx context.Context, interval, timeout time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			pctx, cancel := context.WithTimeout(ctx, timeout)
+			err := c.ws.Ping(pctx)
+			cancel()
+			if err != nil {
+				_ = c.ws.CloseNow()
+				return
+			}
+		}
+	}
+}
+
 type relayRoom struct {
 	mu     sync.Mutex
 	host   *relayConn
@@ -108,7 +145,8 @@ func (rl *Relay) ServeRelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ws.SetReadLimit(32 << 20)
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	c := newRelayConn(ws)
 
 	if role == "host" {
@@ -130,6 +168,7 @@ func (rl *Relay) serveHost(ctx context.Context, roomID string, c *relayConn) {
 	rl.mu.Unlock()
 
 	go c.writeLoop(ctx)
+	go c.keepAlive(ctx, rl.pingInterval, rl.pingTimeout)
 	defer func() {
 		rl.mu.Lock()
 		if rl.rooms[roomID] == room {
@@ -188,6 +227,7 @@ func (rl *Relay) serveGuest(ctx context.Context, roomID string, c *relayConn) {
 	room.mu.Unlock()
 
 	go c.writeLoop(ctx)
+	go c.keepAlive(ctx, rl.pingInterval, rl.pingTimeout)
 	host.enqueue(ctrlFrame("peer-joined", peerID))
 	defer func() {
 		room.mu.Lock()
