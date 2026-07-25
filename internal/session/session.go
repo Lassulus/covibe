@@ -40,6 +40,7 @@ type Config struct {
 	Mux        string // "zellij" | "tmux"
 	MuxSession string
 	Store      *spool.Store
+	Sink       Sink // lifecycle backend; nil uses the local on-disk spool (cfg.Store)
 }
 
 // Run executes the wrapper: mint the room, register the session, spawn the
@@ -52,12 +53,16 @@ func Run(cfg Config) error {
 	if cfg.ID == "" {
 		cfg.ID = newID()
 	}
-	if cfg.Store == nil {
-		st, err := spool.Open("")
-		if err != nil {
-			return err
+	sink := cfg.Sink
+	if sink == nil {
+		if cfg.Store == nil {
+			st, err := spool.Open("")
+			if err != nil {
+				return err
+			}
+			cfg.Store = st
 		}
-		cfg.Store = st
+		sink = localSink{store: cfg.Store}
 	}
 
 	rec := &spool.Record{
@@ -91,6 +96,7 @@ func Run(cfg Config) error {
 			return fmt.Errorf("mint collab room: %w", err)
 		}
 		rec.RoomID = room.ID
+		rec.Relay = cfg.LocalRelay
 		rec.JoinLink = collablink.JoinLink(cfg.RelayHost, room.ID, room.Secret)
 		if cfg.WebClient != "" {
 			rec.BrowserURL = collablink.BrowserURL(cfg.WebClient, cfg.RelayHost, room.ID, room.Secret)
@@ -102,13 +108,10 @@ func Run(cfg Config) error {
 		}
 	}
 
-	if err := cfg.Store.Save(rec); err != nil {
+	if err := sink.Register(rec); err != nil {
 		return fmt.Errorf("register session: %w", err)
 	}
-	defer func() {
-		rec.Status = spool.StatusEnded
-		_ = cfg.Store.Save(rec)
-	}()
+	defer sink.End(rec)
 
 	cmd := exec.Command(cfg.OmpBin, ompArgs...) // #nosec G204 -- omp binary is operator-configured; launched with no shell
 	cmd.Dir = cfg.Dir
@@ -136,20 +139,64 @@ func Run(cfg Config) error {
 		defer restore()
 	}
 
-	// Always-on ring of recent output, served to the dashboard's pane endpoint
-	// over a per-session unix socket.
+	// Always-on ring of recent terminal output for the dashboard's pane view.
 	pane := &paneBuffer{max: 64 << 10}
-	if closePane, err := servePane(cfg.Store.PanePath(cfg.ID), pane); err == nil {
-		defer closePane()
-	}
+	killed, stopWatch := sink.Watch(rec, pane)
+	defer stopWatch()
 
 	// stdin → omp
 	go func() { _, _ = io.Copy(ptmx, os.Stdin) }()
 
-	// omp → stdout, tapped by the pane ring for on-demand snapshots.
-	_, _ = io.Copy(io.MultiWriter(os.Stdout, pane), ptmx)
+	// omp → stdout, tapped by the pane ring for snapshots.
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(io.MultiWriter(os.Stdout, pane), ptmx)
+		close(done)
+	}()
 
+	select {
+	case <-done:
+	case <-killed:
+		// Dashboard requested termination: stop omp, then drain.
+		if cmd.Process != nil {
+			_ = cmd.Process.Signal(syscall.SIGTERM)
+		}
+		<-done
+	}
 	return cmd.Wait()
+}
+
+// Sink is the lifecycle backend a session's wrapper drives around the omp PTY:
+// the local on-disk spool (unix-socket pane) or the dashboard REST API (remote).
+type Sink interface {
+	// Register records the session at start (and may assign rec.ID).
+	Register(rec *spool.Record) error
+	// Watch runs background liveness/pane handling for the session's lifetime,
+	// reading snapshots from pane. It closes the returned channel if it observes
+	// an external stop request (e.g. a dashboard kill); the returned func tears
+	// the watcher down.
+	Watch(rec *spool.Record, pane *paneBuffer) (killed <-chan struct{}, stop func())
+	// End marks the session finished.
+	End(rec *spool.Record)
+}
+
+// localSink is the default backend: an on-disk spool plus a per-session unix
+// socket the co-located dashboard reads pane snapshots from on demand.
+type localSink struct{ store *spool.Store }
+
+func (s localSink) Register(rec *spool.Record) error { return s.store.Save(rec) }
+
+func (s localSink) Watch(rec *spool.Record, pane *paneBuffer) (<-chan struct{}, func()) {
+	closePane, err := servePane(s.store.PanePath(rec.ID), pane)
+	if err != nil {
+		return nil, func() {}
+	}
+	return nil, closePane
+}
+
+func (s localSink) End(rec *spool.Record) {
+	rec.Status = spool.StatusEnded
+	_ = s.store.Save(rec)
 }
 
 // paneBuffer keeps the most recent terminal output for on-demand snapshots.

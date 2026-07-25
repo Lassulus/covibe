@@ -101,8 +101,8 @@ function card(s){
   body += '<h2><span class="dot '+esc(s.status)+'"></span>'+esc(s.name||s.id)+
           (s.viewOnly?' <span class="badge">view-only</span>':'')+'</h2>';
   body += '<div class="meta">'+esc(s.dir||'')+'</div>';
-  body += '<div class="meta">'+(s.mux?esc(s.mux)+(s.muxSession?' · '+esc(s.muxSession):''):'')+
-          ' · since '+esc(started)+'</div>';
+  const origin = s.host ? ('@'+esc(s.host)) : (s.mux ? esc(s.mux)+(s.muxSession?' · '+esc(s.muxSession):'') : '');
+  body += '<div class="meta">'+(origin?origin+' · ':'')+'since '+esc(started)+'</div>';
   if (s.model||s.thinking){
     body += '<div class="meta">'+esc(s.model||'default model')+(s.thinking?' · '+esc(s.thinking):'')+'</div>';
   }

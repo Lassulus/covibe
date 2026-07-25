@@ -102,6 +102,8 @@ func cmdSession(args []string) error {
 	stateDir := fs.String("state-dir", "", "spool directory")
 	model := fs.String("model", env("COVIBE_MODEL", ""), "omp model selector (optional)")
 	thinking := fs.String("thinking", env("COVIBE_THINKING", ""), "omp thinking level (optional)")
+	dashboardURL := fs.String("dashboard", env("COVIBE_DASHBOARD", ""), "dashboard base URL for remote registration; enables remote mode")
+	apiKey := fs.String("api-key", env("COVIBE_API_KEY", ""), "dashboard API key (remote mode)")
 	_ = fs.Parse(args)
 
 	if *dir == "" {
@@ -109,11 +111,7 @@ func cmdSession(args []string) error {
 			*dir = wd
 		}
 	}
-	store, err := spool.Open(*stateDir)
-	if err != nil {
-		return err
-	}
-	return session.Run(session.Config{
+	cfg := session.Config{
 		ID:         *id,
 		Name:       orDefault(*name, "session"),
 		Dir:        *dir,
@@ -126,8 +124,17 @@ func cmdSession(args []string) error {
 		LocalRelay: *localRelay,
 		Mux:        *muxName,
 		MuxSession: *muxSession,
-		Store:      store,
-	})
+	}
+	if *dashboardURL != "" {
+		cfg.Sink = session.NewRemoteSink(*dashboardURL, *apiKey)
+	} else {
+		store, err := spool.Open(*stateDir)
+		if err != nil {
+			return err
+		}
+		cfg.Store = store
+	}
+	return session.Run(cfg)
 }
 
 // cmdStart asks the multiplexer to open a tab running covibe session.

@@ -1,0 +1,118 @@
+package dashboard
+
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"os"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/lassulus/covibe/internal/spool"
+)
+
+// safeRoomID matches an omp/collablink room id (base64url, 10-64 chars).
+var safeRoomID = regexp.MustCompile(`^[A-Za-z0-9_-]{10,64}$`)
+
+// clip strips CR/LF (these fields land in HTML and copy buttons) and caps length.
+func clip(s string, n int) string {
+	s = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' {
+			return -1
+		}
+		return r
+	}, s)
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
+}
+
+// handleRegister records a session hosted by a wrapper on another machine so it
+// shows up in the dashboard. Liveness is then driven by the wrapper's heartbeat
+// (POST .../pane) and the relay (roomLive), exactly like a local session's pid +
+// relay signal. Never trusts a caller-supplied pid/status.
+func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	var req spool.RegisterRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	req.Name = strings.TrimSpace(req.Name)
+	if err := validateName(req.Name); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Model != "" && !safeModel.MatchString(req.Model) {
+		http.Error(w, "invalid model", http.StatusBadRequest)
+		return
+	}
+	if req.Thinking != "" && !thinkingLevels[req.Thinking] {
+		http.Error(w, "invalid thinking level", http.StatusBadRequest)
+		return
+	}
+	if req.RoomID != "" && !safeRoomID.MatchString(req.RoomID) {
+		http.Error(w, "invalid room id", http.StatusBadRequest)
+		return
+	}
+	if s.cfg.MaxSessions > 0 {
+		if live, _ := s.cfg.Store.Live(s.cfg.KeepEnded); len(live) >= s.cfg.MaxSessions {
+			http.Error(w, "session limit reached", http.StatusTooManyRequests)
+			return
+		}
+	}
+	rec := &spool.Record{
+		ID:         newSessionID(),
+		Name:       req.Name,
+		Dir:        clip(req.Dir, 256),
+		Model:      req.Model,
+		Thinking:   req.Thinking,
+		Host:       clip(req.Host, 64),
+		Relay:      clip(req.Relay, 256),
+		JoinLink:   clip(req.JoinLink, 512),
+		BrowserURL: clip(req.BrowserURL, 512),
+		RoomID:     req.RoomID,
+		ViewOnly:   req.ViewOnly,
+		Remote:     true,
+		Status:     spool.StatusStarting,
+		StartedAt:  time.Now(),
+	}
+	if err := s.cfg.Store.Save(rec); err != nil {
+		http.Error(w, "register failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"id": rec.ID})
+}
+
+// handleRemotePane is the remote wrapper's periodic heartbeat: it bumps the
+// record's liveness clock and, when the body is non-empty, stores the pushed
+// terminal snapshot for the dashboard's pane view. The reply tells the wrapper
+// whether the session has been killed from the dashboard so it can stop omp.
+func (s *Server) handleRemotePane(w http.ResponseWriter, r *http.Request) {
+	rec, err := s.cfg.Store.Load(r.PathValue("id"))
+	if err != nil || !rec.Remote {
+		http.Error(w, "no such remote session", http.StatusNotFound)
+		return
+	}
+	if rec.Status == spool.StatusEnded {
+		// Killed from the dashboard: signal stop and do not resurrect the
+		// heartbeat clock (which would keep the ended record from being pruned).
+		writeJSON(w, http.StatusOK, map[string]bool{"stop": true})
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 512<<10))
+	if err != nil {
+		http.Error(w, "read body", http.StatusBadRequest)
+		return
+	}
+	if len(body) > 0 {
+		_ = os.WriteFile(s.cfg.Store.PaneFilePath(rec.ID), body, 0o600)
+	}
+	// Re-save to bump UpdatedAt so Alive() keeps the record live.
+	if err := s.cfg.Store.Save(rec); err != nil {
+		http.Error(w, "heartbeat failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"stop": false})
+}

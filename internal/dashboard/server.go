@@ -3,6 +3,7 @@ package dashboard
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 	"syscall"
@@ -80,6 +81,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/sessions/{id}/pane", s.requireAPI(s.handlePane))
 	mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.requireAPI(s.handleKill))
 	mux.HandleFunc("GET /api/v1/models", s.requireAPI(s.handleModels))
+	mux.HandleFunc("POST /api/v1/sessions/register", s.requireAPI(s.handleRegister))
+	mux.HandleFunc("POST /api/v1/sessions/{id}/pane", s.requireAPI(s.handleRemotePane))
 
 	// Content-blind collab relay: omp host + `omp join`/collab-web guests. No
 	// auth — possession of the room key (in the link fragment) is the trust
@@ -142,6 +145,7 @@ type sessionView struct {
 	ID         string    `json:"id"`
 	Name       string    `json:"name"`
 	Dir        string    `json:"dir"`
+	Host       string    `json:"host,omitempty"`
 	Status     string    `json:"status"`
 	Mux        string    `json:"mux,omitempty"`
 	MuxSession string    `json:"muxSession,omitempty"`
@@ -161,6 +165,7 @@ func (s *Server) viewOf(r spool.Record) sessionView {
 		ID:         r.ID,
 		Name:       r.Name,
 		Dir:        r.Dir,
+		Host:       r.Host,
 		Status:     r.Status,
 		Mux:        r.Mux,
 		MuxSession: r.MuxSession,
@@ -191,10 +196,15 @@ func (s *Server) handleKill(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no such session", http.StatusNotFound)
 		return
 	}
-	if rec.PID > 0 {
-		_ = syscall.Kill(rec.PID, syscall.SIGTERM)
+	if !rec.Remote {
+		if rec.PID > 0 {
+			_ = syscall.Kill(rec.PID, syscall.SIGTERM)
+		}
+		mux.Kill(rec.Mux, rec.MuxSession)
 	}
-	mux.Kill(rec.Mux, rec.MuxSession)
+	// A remote wrapper lives on another machine: signaling rec.PID here could
+	// hit an unrelated local process. Marking the record ended is enough — the
+	// wrapper's next heartbeat sees it and stops omp itself.
 	rec.Status = spool.StatusEnded
 	_ = s.cfg.Store.Save(&rec)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "killed", "id": rec.ID})
@@ -259,7 +269,13 @@ func (s *Server) handlePane(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no such session", http.StatusNotFound)
 		return
 	}
-	out, err := readPane(s.cfg.Store.PanePath(rec.ID))
+	var out []byte
+	var err error
+	if rec.Remote {
+		out, err = os.ReadFile(s.cfg.Store.PaneFilePath(rec.ID))
+	} else {
+		out, err = readPane(s.cfg.Store.PanePath(rec.ID))
+	}
 	if err != nil {
 		http.Error(w, "pane unavailable", http.StatusServiceUnavailable)
 		return

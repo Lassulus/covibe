@@ -23,6 +23,11 @@ const (
 	StatusEnded    = "ended"    // omp exited; record kept briefly for the UI
 )
 
+// RemoteTTL bounds how long a remote (REST-registered) record is considered
+// alive without a heartbeat. The remote wrapper pushes pane/heartbeat well
+// inside this window; a stale record (wrapper gone) is pruned by the dashboard.
+const RemoteTTL = 30 * time.Second
+
 // Record is one co-vibing session as seen by the dashboard.
 type Record struct {
 	ID         string    `json:"id"`
@@ -42,12 +47,36 @@ type Record struct {
 	RoomID     string    `json:"roomId,omitempty"` // covibe-minted collab room id (stable per session)
 	StartedAt  time.Time `json:"startedAt"`
 	UpdatedAt  time.Time `json:"updatedAt"`
+	Remote     bool      `json:"remote,omitempty"` // registered via REST from another machine; liveness is heartbeat-TTL, pane is pushed
+	Host       string    `json:"host,omitempty"`   // origin machine for remote sessions (display only)
+}
+
+// RegisterRequest is the body a remote wrapper POSTs to register a session it is
+// hosting on another machine. The dashboard whitelists these fields into a
+// fresh Record (Remote=true); it never trusts a caller-supplied pid or status.
+type RegisterRequest struct {
+	Name       string `json:"name"`
+	Dir        string `json:"dir,omitempty"`
+	Model      string `json:"model,omitempty"`
+	Thinking   string `json:"thinking,omitempty"`
+	Host       string `json:"host,omitempty"`
+	Relay      string `json:"relay,omitempty"`
+	JoinLink   string `json:"joinLink,omitempty"`
+	BrowserURL string `json:"browserUrl,omitempty"`
+	RoomID     string `json:"roomId,omitempty"`
+	ViewOnly   bool   `json:"viewOnly,omitempty"`
 }
 
 // Alive reports whether the wrapper process backing the record is still running.
 // A dead pid means the wrapper crashed without cleaning up; such records are
 // pruned by the dashboard rather than shown as live.
 func (r Record) Alive() bool {
+	// Remote records have no local process to probe; liveness is the freshness
+	// of the wrapper's heartbeat (UpdatedAt), reconciled the same way pid
+	// liveness is for local sessions.
+	if r.Remote {
+		return time.Since(r.UpdatedAt) < RemoteTTL
+	}
 	if r.PID <= 0 {
 		return false
 	}
@@ -103,6 +132,12 @@ func (s *Store) PanePath(id string) string {
 	return filepath.Join(s.dir, id+".sock")
 }
 
+// PaneFilePath is the regular file a remote wrapper's pushed pane snapshot is
+// stored at (remote sessions cannot serve the unix socket of PanePath).
+func (s *Store) PaneFilePath(id string) string {
+	return filepath.Join(s.dir, id+".pane")
+}
+
 // Save atomically writes a record, stamping UpdatedAt.
 func (s *Store) Save(r *Record) error {
 	if r.ID == "" {
@@ -148,6 +183,7 @@ func (s *Store) Load(id string) (*Record, error) {
 
 // Remove deletes a record file, ignoring absence.
 func (s *Store) Remove(id string) error {
+	_ = os.Remove(s.PaneFilePath(id))
 	err := os.Remove(s.path(id))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
