@@ -1,5 +1,5 @@
 diff --git a/packages/coding-agent/src/collab/host.ts b/packages/coding-agent/src/collab/host.ts
-index 5d9d103..722b01b 100644
+index 5d9d103..8112e51 100644
 --- a/packages/coding-agent/src/collab/host.ts
 +++ b/packages/coding-agent/src/collab/host.ts
 @@ -21,6 +21,7 @@ import type {
@@ -10,7 +10,25 @@ index 5d9d103..722b01b 100644
  import type { InteractiveModeContext } from "../modes/types";
  import { AgentLifecycleManager } from "../registry/agent-lifecycle";
  import { type AgentRef, AgentRegistry } from "../registry/agent-registry";
-@@ -207,10 +208,14 @@ export class CollabHost {
+@@ -143,6 +144,17 @@ export class CollabHost {
+ 		this.#ctx = ctx;
+ 	}
+ 
++	/**
++	 * Whether the relay socket is open right now. A host object outliving its
++	 * connection is not hypothetical: if CollabSocket's reconnect chain stops
++	 * (a dropped close event during an outage leaves it with no socket and no
++	 * retry armed), the host stays in place, silently disconnected, and the relay
++	 * frees the room. This is the covibe supervisor's liveness signal.
++	 */
++	get connected(): boolean {
++		return this.#socket?.isOpen ?? false;
++	}
++
+ 	get link(): string {
+ 		return this.#link;
+ 	}
+@@ -207,10 +219,14 @@ export class CollabHost {
  		}
  	}
  
@@ -29,7 +47,7 @@ index 5d9d103..722b01b 100644
  		this.#writeToken = writeToken;
  		this.#link = formatCollabLink(relayUrl, roomId, rawKey, writeToken);
  		this.#webLink = formatCollabWebLink(relayUrl, roomId, rawKey, writeToken, webUrl);
-@@ -289,6 +294,9 @@ export class CollabHost {
+@@ -289,6 +305,9 @@ export class CollabHost {
  	/** Broadcast a goodbye, detach all taps, and close the socket. */
  	async stop(reason: string): Promise<void> {
  		if (this.#stopped) return;
@@ -39,7 +57,7 @@ index 5d9d103..722b01b 100644
  		this.#socket?.send({ t: "bye", reason });
  		await this.#teardown();
  	}
-@@ -689,3 +697,103 @@ export class CollabHost {
+@@ -689,3 +708,126 @@ export class CollabHost {
  		this.#ctx.ui.requestRender();
  	}
  }
@@ -63,6 +81,12 @@ index 5d9d103..722b01b 100644
 +const AUTOSTART_POLL_MS = 2_000;
 +const AUTOSTART_BACKOFF_BASE_MS = 1_000;
 +const AUTOSTART_BACKOFF_MAX_MS = 30_000;
++/**
++ * How long the host may stay disconnected before the supervisor replaces it.
++ * CollabSocket's own backoff caps at 30s, so this leaves room for the ordinary
++ * reconnect to win before intervening.
++ */
++const AUTOSTART_DISCONNECT_GRACE_MS = 30_000;
 +
 +/** Set once the user explicitly stops hosting, disabling re-hosting. */
 +let userStoppedHosting = false;
@@ -117,8 +141,25 @@ index 5d9d103..722b01b 100644
 +	const cfg = readCollabAutostartEnv();
 +	if (!cfg) return;
 +	let attempt = 0;
++	let disconnectedMs = 0;
 +	for (;;) {
 +		if (userStoppedHosting) return;
++		// A host that is present but not connected is stale: the relay has since
++		// freed the room, so replace it rather than wait for a reconnect that is
++		// never coming. Dropping it here makes the start below re-host the same
++		// room, which keeps every shared link and QR code valid.
++		const current = ctx.collabHost;
++		if (current && !ctx.collabGuest) {
++			disconnectedMs = current.connected ? 0 : disconnectedMs + AUTOSTART_POLL_MS;
++			if (disconnectedMs >= AUTOSTART_DISCONNECT_GRACE_MS) {
++				logger.warn("collab autostart: host disconnected, re-hosting", {
++					room: cfg.preset?.roomId,
++					disconnectedMs,
++				});
++				disconnectedMs = 0;
++				await current.stop("relay connection lost");
++			}
++		}
 +		// Joining someone else's session takes precedence over hosting ours.
 +		if (!ctx.collabHost && !ctx.collabGuest) {
 +			try {
