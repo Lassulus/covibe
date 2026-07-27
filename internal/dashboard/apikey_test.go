@@ -77,7 +77,7 @@ func newTestServer(t *testing.T, keys APIKeys, noAuth bool) (*Server, *spool.Sto
 	}
 	rec := &spool.Record{
 		ID: "s1", Name: "demo", Dir: "/tmp/demo", Status: spool.StatusLive,
-		PID: os.Getpid(), BrowserURL: "https://covibe.example/s/s1",
+		PID: os.Getpid(), RoomID: "room-s1", BrowserURL: "https://covibe.example/s/s1",
 		StartedAt: time.Now(),
 	}
 	if err := store.Save(rec); err != nil {
@@ -88,6 +88,9 @@ func newTestServer(t *testing.T, keys APIKeys, noAuth bool) (*Server, *spool.Sto
 		Auth:    testAuth(OIDCConfig{NoAuth: noAuth}),
 		APIKeys: keys,
 	})
+	// A live session means a host is connected on the relay — the state in which
+	// the view publishes the join links/QR.
+	s.relay.rooms[rec.RoomID] = &relayRoom{}
 	return s, store
 }
 

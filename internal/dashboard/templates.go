@@ -116,7 +116,7 @@ function card(s){
               '<button data-copy="omp join &quot;'+esc(s.joinLink)+'&quot;">copy</button></div>';
     }
   } else {
-    body += '<div class="waiting">starting…</div>';
+    body += '<div class="waiting">waiting for host…</div>';
   }
   body += '<div class="actions"><button class="pane" data-pane="'+esc(s.id)+'">view pane</button>'+
           '<button class="kill" data-kill="'+esc(s.id)+'">kill</button></div>';
