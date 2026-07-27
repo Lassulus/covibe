@@ -126,13 +126,15 @@ in
 
     webRoot = lib.mkOption {
       type = lib.types.str;
-      default = "";
+      default = if cfg.ompPackage != null then "${cfg.ompPackage}/share/collab-web" else "";
+      defaultText = lib.literalExpression "\"\${ompPackage}/share/collab-web\"";
       example = "/nix/store/…-omp/share/collab-web";
       description = ''
         Directory of a built collab-web static SPA (base path /c/) to self-host
         at <host>/c/. When set, browser links default to https://<relayHost>/c
-        and nothing loads from my.omp.sh. Typically the collab-web output of the
-        patched omp package.
+        and nothing loads from my.omp.sh. Defaults to the SPA shipped by the
+        patched omp package, so a stock deployment is fully self-hosted; set to
+        "" to fall back to omp's hosted client.
       '';
     };
 
@@ -172,8 +174,15 @@ in
 
     ompPackage = lib.mkOption {
       type = lib.types.nullOr lib.types.package;
-      default = null;
-      description = "Optional omp package placed on the dashboard service PATH so it can launch sessions.";
+      default = self.packages.${pkgs.stdenv.hostPlatform.system}.omp;
+      defaultText = lib.literalExpression "covibe.packages.\${system}.omp";
+      description = ''
+        omp package placed on the dashboard service PATH and launched inside each
+        session (COVIBE_OMP points at its binary by absolute path, so sessions do
+        not depend on the multiplexer server's PATH). Defaults to covibe's
+        patched omp: env-driven supervised collab hosting plus the self-hosted
+        collab-web SPA. null leaves omp resolution to PATH.
+      '';
     };
 
     authBrokerUrl = lib.mkOption {

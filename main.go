@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -108,6 +109,13 @@ func cmdSession(args []string) error {
 	if *dir == "" {
 		if wd, err := os.Getwd(); err == nil {
 			*dir = wd
+		}
+	}
+	// A session in ~/src/covibe is "covibe", not the literal "session": the name
+	// is the dashboard label, and the wrapper no longer has to compute it.
+	if *name == "" {
+		if base := filepath.Base(*dir); base != "" && base != "." && base != string(os.PathSeparator) {
+			*name = base
 		}
 	}
 	cfg := session.Config{

@@ -4,6 +4,11 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    # Source of the unpatched omp. A consumer that already has llm-agents should
+    # set inputs.covibe.inputs.llm-agents.follows to share one omp revision (and
+    # one build) instead of pinning a second.
+    llm-agents.url = "github:numtide/llm-agents.nix";
+    llm-agents.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs =
@@ -11,6 +16,7 @@
       self,
       nixpkgs,
       flake-utils,
+      llm-agents,
     }:
     let
       systemOutputs = flake-utils.lib.eachDefaultSystem (
@@ -20,11 +26,19 @@
           covibe = pkgs.callPackage ./nix/package.nix {
             version = self.shortRev or self.dirtyShortRev or "dev";
           };
+          omp = pkgs.callPackage ./nix/omp.nix {
+            baseOmp = llm-agents.packages.${system}.omp;
+          };
         in
         {
           packages = {
             default = covibe;
             covibe = covibe;
+            # omp carrying covibe's collab patch + the self-hosted collab-web SPA.
+            omp = omp;
+            # covibe CLI with no backend baked in; override the addresses:
+            #   covibe-client.override { dashboard = "https://covibe.example"; }
+            covibe-client = pkgs.callPackage ./nix/client.nix { inherit covibe omp; };
           };
 
           apps.default = {
