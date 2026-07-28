@@ -10,7 +10,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -54,15 +56,24 @@ type Identity struct {
 
 // Authenticator performs the OIDC dance and gates handlers.
 type Authenticator struct {
-	cfg      OIDCConfig
-	secret   []byte
+	cfg    OIDCConfig
+	secret []byte
+	// Discovery result, filled on first use by resolve. Guarded by mu because
+	// concurrent logins may race to discover.
+	mu       sync.Mutex
 	provider *oidc.Provider
 	verifier *oidc.IDTokenVerifier
 	oauth    oauth2.Config
 }
 
-// NewAuthenticator discovers the issuer and builds the authenticator. In NoAuth
-// mode discovery is skipped.
+// NewAuthenticator builds the authenticator and tries to discover the issuer.
+// Discovery failure is NOT fatal: the dashboard hosts the collab relay, so
+// refusing to start when the identity provider happens to be down takes every
+// live session's room with it (and, under a restart loop, wipes the room map
+// every few seconds). Login is the only thing that needs the provider, so an
+// unreachable issuer degrades to "no new logins" while the relay, the API and
+// existing cookie sessions keep working; resolve retries on each attempt. In
+// NoAuth mode discovery is skipped entirely.
 func NewAuthenticator(ctx context.Context, cfg OIDCConfig) (*Authenticator, error) {
 	secret := cfg.CookieSecret
 	if len(secret) == 0 {
@@ -75,27 +86,43 @@ func NewAuthenticator(ctx context.Context, cfg OIDCConfig) (*Authenticator, erro
 	if cfg.NoAuth {
 		return a, nil
 	}
+	// Missing configuration is a deployment error, not an outage: fail loudly.
 	if cfg.Issuer == "" || cfg.ClientID == "" || cfg.RedirectURL == "" {
 		return nil, fmt.Errorf("oidc: issuer, client id and redirect url are required (or set no-auth)")
 	}
-	provider, err := oidc.NewProvider(ctx, cfg.Issuer)
-	if err != nil {
-		return nil, fmt.Errorf("oidc discovery: %w", err)
+	if _, _, err := a.resolve(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "covibe: %v — browser login unavailable until the issuer recovers; relay and API unaffected\n", err)
 	}
-	scopes := cfg.Scopes
+	return a, nil
+}
+
+// resolve returns the discovered oauth config and id-token verifier, performing
+// discovery on first use. Values are returned by copy so callers never read the
+// cached fields unsynchronised.
+func (a *Authenticator) resolve(ctx context.Context) (oauth2.Config, *oidc.IDTokenVerifier, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.verifier != nil {
+		return a.oauth, a.verifier, nil
+	}
+	provider, err := oidc.NewProvider(ctx, a.cfg.Issuer)
+	if err != nil {
+		return oauth2.Config{}, nil, fmt.Errorf("oidc discovery: %w", err)
+	}
+	scopes := a.cfg.Scopes
 	if len(scopes) == 0 {
 		scopes = []string{oidc.ScopeOpenID, "profile", "email"}
 	}
 	a.provider = provider
-	a.verifier = provider.Verifier(&oidc.Config{ClientID: cfg.ClientID})
+	a.verifier = provider.Verifier(&oidc.Config{ClientID: a.cfg.ClientID})
 	a.oauth = oauth2.Config{
-		ClientID:     cfg.ClientID,
-		ClientSecret: cfg.ClientSecret,
+		ClientID:     a.cfg.ClientID,
+		ClientSecret: a.cfg.ClientSecret,
 		Endpoint:     provider.Endpoint(),
-		RedirectURL:  cfg.RedirectURL,
+		RedirectURL:  a.cfg.RedirectURL,
 		Scopes:       scopes,
 	}
-	return a, nil
+	return a.oauth, a.verifier, nil
 }
 
 // flowState is the transient state stored in the flow cookie during login.
@@ -112,6 +139,11 @@ func (a *Authenticator) Login(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
+	oauthCfg, _, err := a.resolve(r.Context())
+	if err != nil {
+		http.Error(w, "identity provider unavailable, retry shortly", http.StatusServiceUnavailable)
+		return
+	}
 	verifier := oauth2.GenerateVerifier()
 	fs := flowState{
 		State:    randToken(),
@@ -120,7 +152,7 @@ func (a *Authenticator) Login(w http.ResponseWriter, r *http.Request) {
 		Next:     sanitizeNext(r.URL.Query().Get("next")),
 	}
 	a.setSigned(w, flowCookie, fs, flowTTL)
-	url := a.oauth.AuthCodeURL(fs.State,
+	url := oauthCfg.AuthCodeURL(fs.State,
 		oauth2.S256ChallengeOption(verifier),
 		oidc.Nonce(fs.Nonce),
 	)
@@ -148,7 +180,12 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	tok, err := a.oauth.Exchange(ctx, r.URL.Query().Get("code"), oauth2.VerifierOption(fs.Verifier))
+	oauthCfg, idVerifier, err := a.resolve(ctx)
+	if err != nil {
+		http.Error(w, "identity provider unavailable, retry shortly", http.StatusServiceUnavailable)
+		return
+	}
+	tok, err := oauthCfg.Exchange(ctx, r.URL.Query().Get("code"), oauth2.VerifierOption(fs.Verifier))
 	if err != nil {
 		http.Error(w, "token exchange failed", http.StatusUnauthorized)
 		return
@@ -158,7 +195,7 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no id_token in response", http.StatusUnauthorized)
 		return
 	}
-	idToken, err := a.verifier.Verify(ctx, rawID)
+	idToken, err := idVerifier.Verify(ctx, rawID)
 	if err != nil {
 		http.Error(w, "id_token verification failed", http.StatusUnauthorized)
 		return
