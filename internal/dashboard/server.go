@@ -46,6 +46,7 @@ type Server struct {
 	cfg      Config
 	fails    *failLimiter
 	relay    *Relay
+	killed   *killRegistry
 	mmu      sync.Mutex
 	models   []ModelOption
 	modelsAt time.Time
@@ -57,7 +58,7 @@ func NewServer(cfg Config) *Server {
 		cfg.KeepEnded = 20 * time.Second
 	}
 	// Throttle a client after 10 failed auth attempts per minute.
-	return &Server{cfg: cfg, fails: newFailLimiter(10, time.Minute), relay: newRelay()}
+	return &Server{cfg: cfg, fails: newFailLimiter(10, time.Minute), relay: newRelay(), killed: newKillRegistry()}
 }
 
 // Handler returns the fully wired http.Handler (auth + routes).
@@ -211,9 +212,10 @@ func (s *Server) handleKill(w http.ResponseWriter, r *http.Request) {
 		}
 		mux.Kill(rec.Mux, rec.MuxSession)
 	}
-	// A remote wrapper lives on another machine: signaling rec.PID here could
-	// hit an unrelated local process. Marking the record ended is enough — the
-	// wrapper's next heartbeat sees it and stops omp itself.
+	// A remote wrapper lives on another machine: signaling rec.PID here could hit
+	// an unrelated local process. The wrapper's next heartbeat sees the ended
+	// record (or the tombstone below, once the record is pruned) and stops omp.
+	s.killed.remember(rec.ID, rec.RoomID)
 	rec.Status = spool.StatusEnded
 	_ = s.cfg.Store.Save(&rec)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "killed", "id": rec.ID})

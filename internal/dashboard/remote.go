@@ -39,6 +39,13 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return
 	}
+	// A killed session must not come back: the wrapper re-registers under a fresh
+	// id when the dashboard forgets it, and the room id is the one identity that
+	// survives that, so it is what recognises the resurrection.
+	if s.killed.has(req.RoomID) {
+		http.Error(w, "session was killed", http.StatusGone)
+		return
+	}
 	req.Name = strings.TrimSpace(req.Name)
 	if err := validateName(req.Name); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -90,8 +97,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 // terminal snapshot for the dashboard's pane view. The reply tells the wrapper
 // whether the session has been killed from the dashboard so it can stop omp.
 func (s *Server) handleRemotePane(w http.ResponseWriter, r *http.Request) {
-	rec, err := s.cfg.Store.Load(r.PathValue("id"))
+	id := r.PathValue("id")
+	rec, err := s.cfg.Store.Load(id)
 	if err != nil || !rec.Remote {
+		// Killed and already pruned: keep answering stop so a wrapper that checks
+		// in after the record is gone still terminates instead of reading the 404
+		// as "the dashboard forgot me" and re-registering.
+		if s.killed.has(id) {
+			writeJSON(w, http.StatusOK, map[string]bool{"stop": true})
+			return
+		}
 		http.Error(w, "no such remote session", http.StatusNotFound)
 		return
 	}

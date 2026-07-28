@@ -125,9 +125,16 @@ function card(s){
     b.onclick = ()=>{ navigator.clipboard.writeText(b.dataset.copy); b.textContent='copied'; setTimeout(()=>b.textContent='copy',1200); };
   });
   el.querySelector('button[data-pane]').onclick = ()=>showPane(s.id, s.name||s.id);
-  el.querySelector('button[data-kill]').onclick = async ()=>{
+  el.querySelector('button[data-kill]').onclick = async (ev)=>{
     if (!confirm('Kill session '+(s.name||s.id)+'?')) return;
-    try { await fetch('/api/v1/sessions/'+encodeURIComponent(s.id), {method:'DELETE'}); } catch(e){}
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    try {
+      const res = await fetch('/api/v1/sessions/'+encodeURIComponent(s.id), {method:'DELETE'});
+      // A stale card can name a session the dashboard no longer has (a remote
+      // wrapper re-registers under a new id): say so instead of looking dead.
+      if (!res.ok) btn.textContent = res.status===404 ? 'gone — refreshing' : ('kill failed ('+res.status+')');
+    } catch(e){ btn.textContent = 'kill failed'; }
     setTimeout(refresh, 300);
   };
   return el;
