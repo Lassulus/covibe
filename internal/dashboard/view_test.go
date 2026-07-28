@@ -23,8 +23,8 @@ func TestViewOfPublishesLinksOnlyWithHostOnRelay(t *testing.T) {
 	}
 
 	v := s.viewOf(rec)
-	if v.JoinLink != "" || v.BrowserURL != "" || v.QR != "" {
-		t.Fatalf("hostless room advertised: join=%q browser=%q qrBytes=%d", v.JoinLink, v.BrowserURL, len(v.QR))
+	if v.JoinLink != "" || v.BrowserURL != "" {
+		t.Fatalf("hostless room advertised: join=%q browser=%q", v.JoinLink, v.BrowserURL)
 	}
 	if v.Status == spool.StatusLive {
 		t.Fatalf("status=%q must not be live without a host", v.Status)
@@ -38,9 +38,6 @@ func TestViewOfPublishesLinksOnlyWithHostOnRelay(t *testing.T) {
 	v = s.viewOf(rec)
 	if v.JoinLink != rec.JoinLink || v.BrowserURL != rec.BrowserURL {
 		t.Fatalf("live room not advertised: join=%q browser=%q", v.JoinLink, v.BrowserURL)
-	}
-	if v.QR == "" {
-		t.Fatal("live room should carry a QR for the browser link")
 	}
 	if v.Status != spool.StatusLive {
 		t.Fatalf("status=%q want %q", v.Status, spool.StatusLive)
@@ -59,8 +56,8 @@ func TestViewOfEndedSessionNeverAdvertises(t *testing.T) {
 	}
 	s.relay.rooms[rec.RoomID] = &relayRoom{}
 	v := s.viewOf(rec)
-	if v.JoinLink != "" || v.BrowserURL != "" || v.QR != "" {
-		t.Fatalf("ended session advertised: join=%q browser=%q qrBytes=%d", v.JoinLink, v.BrowserURL, len(v.QR))
+	if v.JoinLink != "" || v.BrowserURL != "" {
+		t.Fatalf("ended session advertised: join=%q browser=%q", v.JoinLink, v.BrowserURL)
 	}
 	if v.Status != spool.StatusEnded {
 		t.Fatalf("status=%q want %q", v.Status, spool.StatusEnded)

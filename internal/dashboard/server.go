@@ -162,7 +162,6 @@ type sessionView struct {
 	BrowserURL string    `json:"browserUrl,omitempty"`
 	ViewOnly   bool      `json:"viewOnly"`
 	Room       string    `json:"room,omitempty"`
-	QR         string    `json:"qr,omitempty"`
 	StartedAt  time.Time `json:"startedAt"`
 }
 
@@ -184,16 +183,14 @@ func (s *Server) viewOf(r spool.Record) sessionView {
 	// A host connected to the relay is the true "live" signal (the record itself
 	// only flips to ended when the wrapper exits) — and the only state in which
 	// the join links actually work: the relay rejects a guest for a room with no
-	// host ("session ended: no such room"). So the links and QR are published
-	// only while a host is on the relay; a registered-but-hostless session shows
-	// as waiting instead of handing out a dead link.
+	// host ("session ended: no such room"). So the links are published only while
+	// a host is on the relay; a registered-but-hostless session shows as waiting
+	// instead of handing out a dead link. The QR is not part of the payload: the
+	// overview renders it on demand from /qr, so a hidden QR costs nothing.
 	if r.Status != spool.StatusEnded && r.RoomID != "" && s.relay.roomLive(r.RoomID) {
 		v.Status = spool.StatusLive
 		v.JoinLink = r.JoinLink
 		v.BrowserURL = r.BrowserURL
-		if v.BrowserURL != "" {
-			v.QR = qrDataURI(v.BrowserURL, 240)
-		}
 	}
 	return v
 }

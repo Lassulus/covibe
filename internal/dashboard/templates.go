@@ -17,15 +17,32 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
   header .who { color:var(--muted); font-size:.85rem; }
   header a { color:var(--accent); text-decoration:none; }
   main { padding:1.5rem; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:1.25rem; }
-  .card { background:var(--card); border:1px solid #222; border-radius:12px; padding:1.1rem; display:flex; flex-direction:column; gap:.6rem; }
-  .card h2 { margin:0; font-size:1.05rem; display:flex; align-items:center; gap:.5rem; }
+  .list { display:flex; flex-direction:column; gap:.35rem; }
+  /* The actions track is a fixed width, not auto: an auto track sizes to its
+     buttons, which differ per row (QR + open vs. "waiting for host…"), and that
+     changes how the fr tracks divide the rest — so nothing would line up. */
+  .row { background:var(--card); border:1px solid #222; border-radius:8px; padding:.55rem .75rem;
+         display:grid; gap:.5rem 1rem; align-items:center;
+         grid-template-columns:minmax(160px,1.4fr) minmax(160px,2fr) minmax(120px,1.2fr) 250px; }
+  .row.head { background:transparent; border-color:transparent; padding:.1rem .75rem; color:var(--muted);
+              font-size:.72rem; text-transform:uppercase; letter-spacing:.04em; }
+  .row .name { font-weight:600; display:flex; align-items:center; gap:.45rem; min-width:0; }
+  .row .name span.t { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  @media (max-width:860px) {
+    .row { grid-template-columns:1fr auto; }
+    .row.head { display:none; }
+    .row .dir, .row .who2 { grid-column:1 / -1; }
+  }
   .dot { width:.6rem; height:.6rem; border-radius:50%; display:inline-block; }
   .dot.live{background:var(--live)} .dot.starting{background:var(--start)} .dot.ended{background:var(--ended)}
   .meta { color:var(--muted); font-size:.82rem; word-break:break-all; }
   .badge { font-size:.7rem; padding:.1rem .45rem; border-radius:999px; border:1px solid #333; color:var(--muted); }
-  .qr { align-self:center; background:#fff; padding:8px; border-radius:8px; }
+  .qrpanel { grid-column:1 / -1; display:flex; gap:1rem; align-items:flex-start; flex-wrap:wrap;
+             border-top:1px solid #222; margin-top:.35rem; padding-top:.6rem; }
+  .qrpanel[hidden] { display:none; }
+  .qr { background:#fff; padding:8px; border-radius:8px; }
   .qr img { display:block; width:200px; height:200px; image-rendering:pixelated; }
+  .links { flex:1; min-width:240px; display:flex; flex-direction:column; gap:.4rem; }
   .link { display:flex; gap:.4rem; }
   .link input { flex:1; background:#0b0e13; border:1px solid #2a2f37; color:var(--fg); border-radius:6px; padding:.4rem .5rem; font-family:ui-monospace,monospace; font-size:.78rem; }
   button { background:#21262d; color:var(--fg); border:1px solid #30363d; border-radius:6px; padding:.4rem .6rem; cursor:pointer; font-size:.8rem; }
@@ -38,8 +55,9 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
   .newform input#newname { min-width:220px; }
   .newform input#newdir { min-width:160px; }
   .newerr { color:#f85149; font-size:.8rem; }
-  .actions { margin-top:.2rem; }
-  .actions .pane { font-size:.78rem; }
+  .actions { display:flex; gap:.35rem; justify-content:flex-end; flex-wrap:wrap; }
+  .actions button, .actions a.open { font-size:.78rem; }
+  .kill { border-color:#5a2a2a; }
   .modal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; padding:1.5rem; z-index:10; }
   .modal[hidden] { display:none; }
   .modalbox { background:var(--card); border:1px solid #30363d; border-radius:10px; width:min(900px,100%); max-height:85vh; display:flex; flex-direction:column; }
@@ -77,7 +95,8 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
     <span id="newerr" class="newerr"></span>
   </form>
   {{end}}
-  <div id="grid" class="grid"></div>
+  <div class="row head"><div>session</div><div>directory</div><div>where · since</div><div class="actions">actions</div></div>
+  <div id="list" class="list"></div>
   <div id="empty" class="empty" hidden>No live sessions.{{if not .CanCreate}} Start one with <code>covibe start &lt;name&gt;</code>.{{end}}</div>
 </main>
 <div id="panemodal" class="modal" hidden>
@@ -87,43 +106,64 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
   </div>
 </div>
 <script nonce="{{.Nonce}}">
-const grid = document.getElementById('grid');
+const list = document.getElementById('list');
 const empty = document.getElementById('empty');
+// Rows are rebuilt wholesale every refresh, so remember which QR panels are
+// open — otherwise a QR you opened to scan vanishes on the next tick.
+const qrOpen = new Set();
 document.getElementById('paneclose').onclick = ()=>{ document.getElementById('panemodal').hidden = true; };
 
 function esc(s){ return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
-function card(s){
+function row(s){
   const el = document.createElement('div');
-  el.className = 'card';
+  el.className = 'row';
   const started = new Date(s.startedAt).toLocaleTimeString();
-  let body = '';
-  body += '<h2><span class="dot '+esc(s.status)+'"></span>'+esc(s.name||s.id)+
-          (s.viewOnly?' <span class="badge">view-only</span>':'')+'</h2>';
-  body += '<div class="meta">'+esc(s.dir||'')+'</div>';
   const origin = s.host ? ('@'+esc(s.host)) : (s.mux ? esc(s.mux)+(s.muxSession?' · '+esc(s.muxSession):'') : '');
-  body += '<div class="meta">'+(origin?origin+' · ':'')+'since '+esc(started)+'</div>';
-  if (s.model||s.thinking){
-    body += '<div class="meta">'+esc(s.model||'default model')+(s.thinking?' · '+esc(s.thinking):'')+'</div>';
-  }
+  const model = s.model ? esc(s.model)+(s.thinking?' · '+esc(s.thinking):'') : (s.thinking?esc(s.thinking):'');
+  let body = '';
+  body += '<div class="name"><span class="dot '+esc(s.status)+'"></span><span class="t">'+esc(s.name||s.id)+'</span>'+
+          (s.viewOnly?' <span class="badge">view-only</span>':'')+'</div>';
+  body += '<div class="meta dir">'+esc(s.dir||'')+'</div>';
+  body += '<div class="meta who2">'+(origin?origin+' · ':'')+esc(started)+(model?'<br>'+model:'')+'</div>';
+  // The QR lives behind a per-row toggle: the overview stays scannable as text.
+  body += '<div class="actions">';
   if (s.browserUrl){
-    body += '<div class="qr"><img alt="join QR" src="'+esc(s.qr)+'"></div>';
-    body += '<div class="link"><input readonly value="'+esc(s.browserUrl)+'">'+
+    body += '<button data-qr="'+esc(s.id)+'">QR</button>';
+    body += '<a class="open" href="'+esc(s.browserUrl)+'" target="_blank" rel="noopener">open ↗</a>';
+  } else {
+    body += '<span class="waiting">waiting for host…</span>';
+  }
+  body += '<button class="pane" data-pane="'+esc(s.id)+'">pane</button>'+
+          '<button class="kill" data-kill="'+esc(s.id)+'">kill</button></div>';
+  if (s.browserUrl){
+    body += '<div class="qrpanel" hidden><div class="qr"><img alt="join QR"></div><div class="links">'+
+            '<div class="link"><input readonly value="'+esc(s.browserUrl)+'">'+
             '<button data-copy="'+esc(s.browserUrl)+'">copy</button></div>';
-    body += '<a class="open" href="'+esc(s.browserUrl)+'" target="_blank" rel="noopener">open in browser ↗</a>';
     if (s.joinLink){
       body += '<div class="link"><input readonly value="omp join &quot;'+esc(s.joinLink)+'&quot;">'+
               '<button data-copy="omp join &quot;'+esc(s.joinLink)+'&quot;">copy</button></div>';
     }
-  } else {
-    body += '<div class="waiting">waiting for host…</div>';
+    body += '</div></div>';
   }
-  body += '<div class="actions"><button class="pane" data-pane="'+esc(s.id)+'">view pane</button>'+
-          '<button class="kill" data-kill="'+esc(s.id)+'">kill</button></div>';
   el.innerHTML = body;
   el.querySelectorAll('button[data-copy]').forEach(b=>{
     b.onclick = ()=>{ navigator.clipboard.writeText(b.dataset.copy); b.textContent='copied'; setTimeout(()=>b.textContent='copy',1200); };
   });
+  const qrBtn = el.querySelector('button[data-qr]');
+  if (qrBtn){
+    const panel = el.querySelector('.qrpanel');
+    const img = panel.querySelector('img');
+    const show = (on)=>{
+      // Rendered on demand from /qr, so the listing carries no QR payload.
+      if (on && !img.getAttribute('src')) img.src = '/qr?data='+encodeURIComponent(s.browserUrl)+'&size=240';
+      panel.hidden = !on;
+      qrBtn.textContent = on ? 'hide QR' : 'QR';
+      if (on) qrOpen.add(s.id); else qrOpen.delete(s.id);
+    };
+    qrBtn.onclick = ()=> show(panel.hidden);
+    if (qrOpen.has(s.id)) show(true);
+  }
   el.querySelector('button[data-pane]').onclick = ()=>showPane(s.id, s.name||s.id);
   el.querySelector('button[data-kill]').onclick = async (ev)=>{
     if (!confirm('Kill session '+(s.name||s.id)+'?')) return;
@@ -131,7 +171,7 @@ function card(s){
     btn.disabled = true;
     try {
       const res = await fetch('/api/v1/sessions/'+encodeURIComponent(s.id), {method:'DELETE'});
-      // A stale card can name a session the dashboard no longer has (a remote
+      // A stale row can name a session the dashboard no longer has (a remote
       // wrapper re-registers under a new id): say so instead of looking dead.
       if (!res.ok) btn.textContent = res.status===404 ? 'gone — refreshing' : ('kill failed ('+res.status+')');
     } catch(e){ btn.textContent = 'kill failed'; }
@@ -157,7 +197,7 @@ async function refresh(){
     const res = await fetch('/api/v1/sessions', {headers:{'Accept':'application/json'}});
     if (res.status === 401){ location.href='/auth/login'; return; }
     const sessions = await res.json();
-    grid.replaceChildren(...sessions.map(card));
+    list.replaceChildren(...sessions.map(row));
     empty.hidden = sessions.length > 0;
   } catch(e){ /* transient; next tick retries */ }
 }
