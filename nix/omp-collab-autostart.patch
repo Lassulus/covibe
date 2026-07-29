@@ -184,8 +184,133 @@ index 5d9d103..8112e51 100644
 +		await Bun.sleep(AUTOSTART_POLL_MS);
 +	}
 +}
+diff --git a/packages/coding-agent/src/collab/relay-client.ts b/packages/coding-agent/src/collab/relay-client.ts
+index 8f2ea5c..4282e61 100644
+--- a/packages/coding-agent/src/collab/relay-client.ts
++++ b/packages/coding-agent/src/collab/relay-client.ts
+@@ -4,6 +4,13 @@
+  * Connects to a relay room, seals/opens AES-GCM frames, and reconnects with
+  * exponential backoff on transient drops. Fatal relay close codes (room gone,
+  * host conflict, room full) and decryption failures never reconnect.
++ *
++ * A ping/pong keepalive guards against the failure that no close event reports:
++ * after a suspend or a dropped route the socket can stay readyState OPEN while
++ * the connection is dead, so the relay's own keepalive frees the room and the
++ * client never notices — a host then "hosts" a room that no longer exists, for
++ * as long as the process lives. Unanswered pings turn that into a normal
++ * reconnect.
+  */
+ import { logger } from "@oh-my-pi/pi-utils";
+ import { open, seal } from "./crypto";
+@@ -19,6 +26,9 @@ const FATAL_CLOSE_REASONS: Record<number, string> = {
+ 
+ const BACKOFF_BASE_MS = 1_000;
+ const BACKOFF_MAX_MS = 30_000;
++/** Keepalive, mirroring the relay's own ping cadence. */
++const PING_INTERVAL_MS = 30_000;
++const PONG_TIMEOUT_MS = 10_000;
+ /** Max enveloped frames buffered while a reconnect is pending; overflow is dropped. */
+ const MAX_PENDING_SENDS = 256;
+ const WS_BACKPRESSURE_THRESHOLD = 64 * 1024;
+@@ -44,6 +54,8 @@ export class CollabSocket {
+ 	#ws: WebSocket | null = null;
+ 	#retryTimer: NodeJS.Timeout | undefined;
+ 	#backpressureDrainTimer: NodeJS.Timeout | undefined;
++	#pingTimer: NodeJS.Timeout | undefined;
++	#pongTimer: NodeJS.Timeout | undefined;
+ 	#attempt = 0;
+ 	/** Terminal state: intentional close or fatal failure. Cleared by connect(). */
+ 	#closed = false;
+@@ -174,6 +186,7 @@ export class CollabSocket {
+ 		const ws = new WebSocket(`${this.#opts.wsUrl}?role=${this.#opts.role}`);
+ 		ws.binaryType = "arraybuffer";
+ 		this.#ws = ws;
++		this.#startKeepalive(ws);
+ 		ws.onopen = () => {
+ 			if (this.#ws !== ws) return;
+ 			this.#attempt = 0;
+@@ -193,11 +206,79 @@ export class CollabSocket {
+ 		ws.onclose = (event: CloseEvent) => {
+ 			if (this.#ws !== ws) return;
+ 			this.#clearBackpressureDrain();
++			this.#clearKeepalive();
+ 			this.#ws = null;
+ 			this.#handleClose(event.code, event.reason);
+ 		};
+ 	}
+ 
++	/**
++	 * Ping the relay periodically and require a pong. Bun exposes WS-level
++	 * ping/pong on the client; where it does not exist the keepalive is skipped
++	 * rather than timing out every socket.
++	 */
++	#startKeepalive(ws: WebSocket): void {
++		this.#clearKeepalive();
++		// Bun extends the client socket with WS-level ping/pong plus a "pong" event;
++		// neither is expressible through the DOM WebSocket types.
++		const bun = ws as WebSocket & {
++			ping?: () => void;
++			addEventListener(type: "pong", listener: () => void): void;
++		};
++		if (typeof bun.ping !== "function") return;
++		bun.addEventListener("pong", () => {
++			if (this.#ws === ws) this.#clearPong();
++		});
++		this.#pingTimer = setInterval(() => {
++			if (this.#ws !== ws || ws.readyState !== WebSocket.OPEN) return;
++			// One probe at a time: a pending deadline is already measuring liveness.
++			if (this.#pongTimer !== undefined) return;
++			try {
++				bun.ping?.();
++			} catch {
++				return;
++			}
++			this.#pongTimer = setTimeout(() => {
++				this.#pongTimer = undefined;
++				this.#failPingTimeout(ws);
++			}, PONG_TIMEOUT_MS);
++		}, PING_INTERVAL_MS);
++	}
++
++	/**
++	 * The socket looks open but the peer stopped answering. Detach it and take the
++	 * ordinary transient-close path so the reconnect (and, for a host, the room)
++	 * is re-established.
++	 */
++	#failPingTimeout(ws: WebSocket): void {
++		if (this.#ws !== ws) return;
++		this.#clearKeepalive();
++		this.#clearBackpressureDrain();
++		this.#ws = null;
++		try {
++			ws.close(1000);
++		} catch {
++			// already dead; the close frame has nowhere to go
++		}
++		logger.warn("collab: relay stopped answering pings, reconnecting");
++		this.#handleClose(1006, "ping timeout");
++	}
++
++	#clearPong(): void {
++		if (this.#pongTimer !== undefined) {
++			clearTimeout(this.#pongTimer);
++			this.#pongTimer = undefined;
++		}
++	}
++
++	#clearKeepalive(): void {
++		if (this.#pingTimer !== undefined) {
++			clearInterval(this.#pingTimer);
++			this.#pingTimer = undefined;
++		}
++		this.#clearPong();
++	}
++
+ 	#handleMessage(ws: WebSocket, data: unknown): void {
+ 		if (typeof data === "string") {
+ 			try {
 diff --git a/packages/coding-agent/src/modes/interactive-mode.ts b/packages/coding-agent/src/modes/interactive-mode.ts
-index 9a444a4..d38f4a2 100644
+index 713ab48..2d37568 100644
 --- a/packages/coding-agent/src/modes/interactive-mode.ts
 +++ b/packages/coding-agent/src/modes/interactive-mode.ts
 @@ -55,6 +55,7 @@ import chalk from "chalk";
