@@ -411,3 +411,97 @@ func TestSnapshotUsesCRLF(t *testing.T) {
 		}
 	}
 }
+
+// The terminal is its own page, opened in a new tab: the dashboard's 4s refresh
+// must never be able to disturb a live shell, and a shell wants the viewport.
+func TestTerminalPage(t *testing.T) {
+	s, id := termServer(t, "cat")
+
+	rec := as(t, s, bobID, "GET", "/t/"+id, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("owner page: %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"`+id+`"`) {
+		t.Fatalf("page does not carry the session id:\n%s", body[:min(len(body), 400)])
+	}
+	for _, want := range []string{"/assets/xterm.js", "/assets/terminal.js", "covibeTerminal("} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("page missing %q", want)
+		}
+	}
+	if strings.Contains(body, "read-only") {
+		t.Fatal("writable session marked read-only")
+	}
+	if csp := rec.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "style-src-attr 'unsafe-inline'") {
+		t.Fatalf("terminal page CSP lacks what xterm needs: %s", csp)
+	}
+
+	// A member of a view-only session gets the page, marked read-only.
+	live, err := s.cfg.Store.Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live.ViewOnly = true
+	if err := s.cfg.Store.Save(live); err != nil {
+		t.Fatal(err)
+	}
+	if got := as(t, s, aliceID, "GET", "/t/"+id, "").Body.String(); !strings.Contains(got, "read-only") {
+		t.Fatal("view-only session not marked read-only on the page")
+	}
+
+	// And someone the session was never shared with cannot open it at all.
+	if rec := as(t, s, carolID, "GET", "/t/"+id, ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("outsider page: %d want 404", rec.Code)
+	}
+}
+
+// Fast typing arrives as a burst of one-byte frames. Each becomes its own
+// send-keys on the control pipe, so ordering has to hold end to end or a
+// command line comes out shuffled.
+func TestBurstInputKeepsOrder(t *testing.T) {
+	s, id := termServer(t, "cat")
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+	jar := httptest.NewRecorder()
+	owner := bobID
+	owner.Exp = time.Now().Add(time.Hour).Unix()
+	s.cfg.Auth.setSigned(jar, authCookie, owner, time.Hour)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/api/v1/sessions/"+id+"/terminal",
+		&websocket.DialOptions{HTTPHeader: http.Header{"Cookie": []string{jar.Header().Get("Set-Cookie")}}})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer ws.CloseNow()
+	if _, _, err := ws.Read(ctx); err != nil { // hello
+		t.Fatal(err)
+	}
+
+	// One frame per character, as a browser sends them.
+	const line = "abcdefghijklmnopqrstuvwxyz0123456789"
+	for _, ch := range []byte(line) {
+		payload, _ := json.Marshal(map[string]string{"t": "input", "b64": base64.StdEncoding.EncodeToString([]byte{ch})})
+		if err := ws.Write(ctx, websocket.MessageText, payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	var screen string
+	for time.Now().Before(deadline) {
+		got := as(t, s, bobID, "GET", "/api/v1/sessions/"+id+"/screen?format=text", "")
+		var out struct{ Screen string }
+		if err := json.Unmarshal(got.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		screen = out.Screen
+		if strings.Contains(screen, line) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("burst arrived shuffled or incomplete; screen:\n%s", screen)
+}

@@ -335,3 +335,37 @@ func writeTermBinary(ctx context.Context, ws *websocket.Conn, data []byte) error
 	defer cancel()
 	return ws.Write(wctx, websocket.MessageBinary, data)
 }
+
+// handleTerminalPage serves the full-page terminal for one session. It is a
+// browser page, so it sits behind the OIDC middleware and redirects to login
+// rather than answering 401 — the WebSocket it opens is the authenticated part.
+func (s *Server) handleTerminalPage(w http.ResponseWriter, r *http.Request) {
+	c := s.callerOf(r)
+	rec, ok := s.liveRecord(r.PathValue("id"))
+	if !ok || !c.canSee(s.cfg.Access.ACL(rec.ID)) {
+		http.Error(w, "no such session", http.StatusNotFound)
+		return
+	}
+	nonce := randToken()
+	data := struct {
+		ID       string
+		Name     string
+		Dir      string
+		CanWrite bool
+		Nonce    string
+	}{
+		ID:       rec.ID,
+		Name:     orDefault(rec.Name, rec.ID),
+		Dir:      rec.Dir,
+		CanWrite: s.canWrite(rec, c),
+		Nonce:    nonce,
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'self'; script-src 'nonce-"+nonce+"' 'self'; style-src 'nonce-"+nonce+"' 'self'; "+
+			"style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; "+
+			"base-uri 'none'; frame-ancestors 'none'; object-src 'none'; form-action 'self'")
+	if err := terminalTmpl.Execute(w, data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}

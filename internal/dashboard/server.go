@@ -140,6 +140,9 @@ func (s *Server) Handler() http.Handler {
 	protected := http.NewServeMux()
 	protected.HandleFunc("/", s.handleIndex)
 	protected.HandleFunc("/qr", s.handleQR)
+	// One session, one tab: the "term" link opens a page that is nothing but the
+	// terminal, so it is never disturbed by the dashboard's refresh loop.
+	protected.HandleFunc("/t/{id}", s.handleTerminalPage)
 	mux.Handle("/", s.cfg.Auth.Middleware(protected))
 
 	return securityHeaders(mux)
