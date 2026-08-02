@@ -17,6 +17,8 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
+
+	"github.com/lassulus/covibe/internal/access"
 )
 
 const (
@@ -37,6 +39,11 @@ type OIDCConfig struct {
 	AllowedEmails  []string
 	AllowedDomains []string
 	AllowedSubs    []string
+	// Admins are the users with full access: they see every session (including
+	// CLI-started and remote-registered ones, which have no owner) and may
+	// manage any session's members. Matched against the email, the sub or the
+	// preferred_username of a login.
+	Admins []string
 	// CookieSecret signs session/flow cookies. Random when empty (logins do
 	// not survive a restart in that case).
 	CookieSecret []byte
@@ -48,22 +55,60 @@ type OIDCConfig struct {
 
 // Identity is the authenticated principal carried in the session cookie.
 type Identity struct {
-	Sub   string `json:"sub"`
-	Email string `json:"email"`
-	Name  string `json:"name,omitempty"`
-	Exp   int64  `json:"exp"`
+	Sub      string `json:"sub"`
+	Email    string `json:"email"`
+	Name     string `json:"name,omitempty"`
+	Username string `json:"username,omitempty"`
+	Exp      int64  `json:"exp"`
+}
+
+// principals are the handles this identity may be addressed by in a session's
+// member list: its email, its sub and its username.
+func (i Identity) principals() []string {
+	return access.Principals(i.Sub, i.Email, i.Username)
 }
 
 // Authenticator performs the OIDC dance and gates handlers.
 type Authenticator struct {
 	cfg    OIDCConfig
 	secret []byte
+	// OnLogin records a completed login in the user directory. Set by
+	// NewServer; nil in tests that only exercise the OIDC flow.
+	OnLogin func(Identity)
 	// Discovery result, filled on first use by resolve. Guarded by mu because
 	// concurrent logins may race to discover.
 	mu       sync.Mutex
 	provider *oidc.Provider
 	verifier *oidc.IDTokenVerifier
 	oauth    oauth2.Config
+}
+
+// IsAdmin reports whether an identity has full access. NoAuth mode (loopback
+// dev) makes the single local identity an admin, or the dashboard would show
+// nothing at all.
+func (a *Authenticator) IsAdmin(id Identity) bool {
+	if a.cfg.NoAuth {
+		return true
+	}
+	return a.adminHandle(id.principals())
+}
+
+// adminHandle matches configured admins against a set of principals, ignoring
+// NoAuth: it answers "is this user configured as an admin", which is what the
+// directory listing reports per user.
+func (a *Authenticator) adminHandle(principals []string) bool {
+	for _, want := range a.cfg.Admins {
+		want = access.Key(want)
+		if want == "" {
+			continue
+		}
+		for _, p := range principals {
+			if p == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // NewAuthenticator builds the authenticator and tries to discover the issuer.
@@ -208,6 +253,7 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 		Email         string `json:"email"`
 		EmailVerified bool   `json:"email_verified"`
 		Name          string `json:"name"`
+		Username      string `json:"preferred_username"`
 	}
 	_ = idToken.Claims(&claims)
 	if !a.allowed(idToken.Subject, claims.Email) {
@@ -215,10 +261,17 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := Identity{
-		Sub:   idToken.Subject,
-		Email: claims.Email,
-		Name:  claims.Name,
-		Exp:   time.Now().Add(sessionTTL).Unix(),
+		Sub:      idToken.Subject,
+		Email:    claims.Email,
+		Name:     claims.Name,
+		Username: claims.Username,
+		Exp:      time.Now().Add(sessionTTL).Unix(),
+	}
+	// Record the login before the redirect: the directory is how an admin finds
+	// a user to add, and a user who has never logged in cannot be found any
+	// other way (pocket-id is not enumerated).
+	if a.OnLogin != nil {
+		a.OnLogin(id)
 	}
 	a.setSigned(w, authCookie, id, sessionTTL)
 	http.Redirect(w, r, orDefault(fs.Next, "/"), http.StatusFound)

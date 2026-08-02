@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lassulus/covibe/internal/access"
 	"github.com/lassulus/covibe/internal/mux"
 	"github.com/lassulus/covibe/internal/spool"
 )
@@ -16,6 +17,7 @@ import (
 // Config configures the dashboard server.
 type Config struct {
 	Store     *spool.Store
+	Access    *access.Store // user directory + per-session member lists
 	Auth      *Authenticator
 	RelayHost string        // public host for guest collab links, e.g. "covibe.lassul.us"
 	WebClient string        // collab-web client base for browser links, e.g. "https://my.omp.sh"
@@ -57,8 +59,19 @@ func NewServer(cfg Config) *Server {
 	if cfg.KeepEnded == 0 {
 		cfg.KeepEnded = 20 * time.Second
 	}
+	// An in-memory directory keeps the no-auth dev dashboard and the tests
+	// working without a state file; Open never fails for the empty path.
+	if cfg.Access == nil {
+		cfg.Access, _ = access.Open("")
+	}
 	// Throttle a client after 10 failed auth attempts per minute.
-	return &Server{cfg: cfg, fails: newFailLimiter(10, time.Minute), relay: newRelay(), killed: newKillRegistry()}
+	s := &Server{cfg: cfg, fails: newFailLimiter(10, time.Minute), relay: newRelay(), killed: newKillRegistry()}
+	if cfg.Auth != nil {
+		cfg.Auth.OnLogin = func(id Identity) {
+			s.cfg.Access.Seen(id.Sub, id.Email, id.Name, id.Username)
+		}
+	}
+	return s
 }
 
 // Handler returns the fully wired http.Handler (auth + routes).
@@ -81,6 +94,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/sessions/{id}", s.requireAPI(s.handleGetOne))
 	mux.HandleFunc("GET /api/v1/sessions/{id}/pane", s.requireAPI(s.handlePane))
 	mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.requireAPI(s.handleKill))
+	mux.HandleFunc("POST /api/v1/sessions/{id}/members", s.requireAPI(s.handleAddMember))
+	mux.HandleFunc("DELETE /api/v1/sessions/{id}/members/{key}", s.requireAPI(s.handleRemoveMember))
+	mux.HandleFunc("GET /api/v1/users", s.requireAPI(s.handleUsers))
 	mux.HandleFunc("GET /api/v1/models", s.requireAPI(s.handleModels))
 	// Open announce surface (no key): any machine can register the session it is
 	// hosting (name + collab links) and push its pane. An announcement is kept
@@ -124,7 +140,9 @@ func securityHeaders(next http.Handler) http.Handler {
 }
 
 // requireAPI gates a handler on a valid API key or an authenticated session,
-// throttling clients that keep failing.
+// throttling clients that keep failing. The resolved caller rides in the
+// request context: every handler below authorizes against it rather than
+// re-deriving who is asking.
 func (s *Server) requireAPI(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ip := clientIP(r)
@@ -132,12 +150,10 @@ func (s *Server) requireAPI(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "too many failed attempts", http.StatusTooManyRequests)
 			return
 		}
-		if s.cfg.APIKeys.Valid(bearerToken(r)) {
-			next(w, r)
-			return
-		}
-		if _, ok := s.cfg.Auth.Current(r); ok {
-			next(w, r)
+		// An identity always carries at least a sub, so a caller with no
+		// principals and no key is simply not authenticated.
+		if c := s.newCaller(r); c.machine || len(c.principals) > 0 {
+			next(w, withCaller(r, c))
 			return
 		}
 		s.fails.fail(ip)
@@ -163,9 +179,14 @@ type sessionView struct {
 	ViewOnly   bool      `json:"viewOnly"`
 	Room       string    `json:"room,omitempty"`
 	StartedAt  time.Time `json:"startedAt"`
+	// Access control, resolved per caller: Owner/Members describe who may see
+	// the session, CanManage whether this caller may change that (and kill it).
+	Owner     string       `json:"owner,omitempty"`
+	Members   []memberView `json:"members,omitempty"`
+	CanManage bool         `json:"canManage"`
 }
 
-func (s *Server) viewOf(r spool.Record) sessionView {
+func (s *Server) viewOf(r spool.Record, c caller) sessionView {
 	v := sessionView{
 		ID:         r.ID,
 		Name:       r.Name,
@@ -192,15 +213,34 @@ func (s *Server) viewOf(r spool.Record) sessionView {
 		v.JoinLink = r.JoinLink
 		v.BrowserURL = r.BrowserURL
 	}
+	acl := s.cfg.Access.ACL(r.ID)
+	v.CanManage = c.canManage(acl)
+	if acl.Owner != "" {
+		v.Owner = s.label(acl.Owner)
+	}
+	for _, m := range s.cfg.Access.Members(r.ID) {
+		v.Members = append(v.Members, memberView{Key: m.Key, Label: m.Label()})
+	}
 	return v
 }
 
 // handleKill terminates a session: signal the wrapper process, which tears down
 // omp (and thus the native collab host) and marks the record ended.
 func (s *Server) handleKill(w http.ResponseWriter, r *http.Request) {
+	c := s.callerOf(r)
 	rec, ok := s.liveRecord(r.PathValue("id"))
 	if !ok {
 		http.Error(w, "no such session", http.StatusNotFound)
+		return
+	}
+	// Members can join a session; ending it belongs to its owner (and admins).
+	acl := s.cfg.Access.ACL(rec.ID)
+	if !c.canSee(acl) {
+		http.Error(w, "no such session", http.StatusNotFound)
+		return
+	}
+	if !c.canManage(acl) {
+		http.Error(w, "not your session", http.StatusForbidden)
 		return
 	}
 	if !rec.Remote {
@@ -218,14 +258,25 @@ func (s *Server) handleKill(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "killed", "id": rec.ID})
 }
 
-func (s *Server) views() ([]sessionView, error) {
+// views returns the sessions this caller may see. Listing is also when ACLs of
+// long-gone sessions are dropped: it runs on every dashboard tick, and the
+// live set is right here.
+func (s *Server) views(c caller) ([]sessionView, error) {
 	recs, err := s.cfg.Store.Live(s.cfg.KeepEnded)
 	if err != nil {
 		return nil, err
 	}
+	live := make(map[string]bool, len(recs))
+	for _, r := range recs {
+		live[r.ID] = true
+	}
+	s.cfg.Access.Prune(live, aclGrace)
 	out := make([]sessionView, 0, len(recs))
 	for _, r := range recs {
-		out = append(out, s.viewOf(r))
+		if !c.canSee(s.cfg.Access.ACL(r.ID)) {
+			continue
+		}
+		out = append(out, s.viewOf(r, c))
 	}
 	return out, nil
 }
@@ -236,8 +287,8 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func (s *Server) handleList(w http.ResponseWriter, _ *http.Request) {
-	views, err := s.views()
+func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
+	views, err := s.views(s.callerOf(r))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -259,22 +310,33 @@ func (s *Server) liveRecord(id string) (spool.Record, bool) {
 	return spool.Record{}, false
 }
 
+// visibleRecord resolves the session in the request path for callers allowed to
+// see it. An unauthorized caller gets the same 404 as a missing id, so the
+// endpoint never confirms that someone else's session exists.
+func (s *Server) visibleRecord(w http.ResponseWriter, r *http.Request) (spool.Record, caller, bool) {
+	c := s.callerOf(r)
+	rec, ok := s.liveRecord(r.PathValue("id"))
+	if !ok || !c.canSee(s.cfg.Access.ACL(rec.ID)) {
+		http.Error(w, "no such session", http.StatusNotFound)
+		return spool.Record{}, c, false
+	}
+	return rec, c, true
+}
+
 // handleGetOne returns a single session including its browser viewer URL + QR.
 func (s *Server) handleGetOne(w http.ResponseWriter, r *http.Request) {
-	rec, ok := s.liveRecord(r.PathValue("id"))
+	rec, c, ok := s.visibleRecord(w, r)
 	if !ok {
-		http.Error(w, "no such session", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.viewOf(rec))
+	writeJSON(w, http.StatusOK, s.viewOf(rec, c))
 }
 
 // handlePane returns a snapshot of the session's terminal output, captured by
 // the session wrapper. ?strip=1 removes ANSI escapes for plain text.
 func (s *Server) handlePane(w http.ResponseWriter, r *http.Request) {
-	rec, ok := s.liveRecord(r.PathValue("id"))
+	rec, _, ok := s.visibleRecord(w, r)
 	if !ok {
-		http.Error(w, "no such session", http.StatusNotFound)
 		return
 	}
 	var out []byte
@@ -322,11 +384,19 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	nonce := randToken()
 	data := struct {
 		User      Identity
+		IsAdmin   bool
 		Relay     string
 		CanCreate bool
 		Models    []string
 		Nonce     string
-	}{User: id, Relay: s.cfg.RelayHost, CanCreate: s.cfg.Create != nil && s.cfg.WorkspaceRoot != "", Models: s.cfg.Models, Nonce: nonce}
+	}{
+		User:      id,
+		IsAdmin:   s.cfg.Auth.IsAdmin(id),
+		Relay:     s.cfg.RelayHost,
+		CanCreate: s.cfg.Create != nil && s.cfg.WorkspaceRoot != "",
+		Models:    s.cfg.Models,
+		Nonce:     nonce,
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Security-Policy",
 		"default-src 'self'; script-src 'nonce-"+nonce+"'; style-src 'nonce-"+nonce+"'; "+

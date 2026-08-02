@@ -22,7 +22,7 @@ func TestViewOfPublishesLinksOnlyWithHostOnRelay(t *testing.T) {
 		BrowserURL: "https://covibe.example/c/#covibe.example/r/room1.secret",
 	}
 
-	v := s.viewOf(rec)
+	v := s.viewOf(rec, caller{admin: true})
 	if v.JoinLink != "" || v.BrowserURL != "" {
 		t.Fatalf("hostless room advertised: join=%q browser=%q", v.JoinLink, v.BrowserURL)
 	}
@@ -35,7 +35,7 @@ func TestViewOfPublishesLinksOnlyWithHostOnRelay(t *testing.T) {
 
 	// Host connects: the room exists on the relay, so the links become real.
 	s.relay.rooms[rec.RoomID] = &relayRoom{}
-	v = s.viewOf(rec)
+	v = s.viewOf(rec, caller{admin: true})
 	if v.JoinLink != rec.JoinLink || v.BrowserURL != rec.BrowserURL {
 		t.Fatalf("live room not advertised: join=%q browser=%q", v.JoinLink, v.BrowserURL)
 	}
@@ -55,7 +55,7 @@ func TestViewOfEndedSessionNeverAdvertises(t *testing.T) {
 		BrowserURL: "https://covibe.example/c/#covibe.example/r/room2.secret",
 	}
 	s.relay.rooms[rec.RoomID] = &relayRoom{}
-	v := s.viewOf(rec)
+	v := s.viewOf(rec, caller{admin: true})
 	if v.JoinLink != "" || v.BrowserURL != "" {
 		t.Fatalf("ended session advertised: join=%q browser=%q", v.JoinLink, v.BrowserURL)
 	}

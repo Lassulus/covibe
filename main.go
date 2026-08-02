@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lassulus/covibe/internal/access"
 	"github.com/lassulus/covibe/internal/dashboard"
 	"github.com/lassulus/covibe/internal/launch"
 	"github.com/lassulus/covibe/internal/session"
@@ -261,6 +262,8 @@ func cmdServe(args []string) error {
 	allowEmails := fs.String("allow-emails", env("COVIBE_ALLOW_EMAILS", ""), "comma-separated allowed emails")
 	allowDomains := fs.String("allow-domains", env("COVIBE_ALLOW_DOMAINS", ""), "comma-separated allowed email domains")
 	allowSubs := fs.String("allow-subs", env("COVIBE_ALLOW_SUBS", ""), "comma-separated allowed subject ids")
+	admins := fs.String("admins", env("COVIBE_ADMINS", ""), "comma-separated admin users (email, sub or preferred_username) with full access")
+	accessFile := fs.String("access-file", env("COVIBE_ACCESS_FILE", ""), "JSON file holding the user directory and per-session member lists (default <state-dir>/access.json)")
 	workspace := fs.String("workspace", env("COVIBE_WORKSPACE", ""), "workspace root enabling web session creation (sessions clamped inside it)")
 	muxName := fs.String("mux", env("COVIBE_MUX", "zellij"), "multiplexer for created sessions: zellij|tmux")
 	muxSession := fs.String("mux-session", env("COVIBE_MUX_SESSION", "covibe"), "multiplexer session name for created sessions")
@@ -283,6 +286,14 @@ func cmdServe(args []string) error {
 	if err != nil {
 		return err
 	}
+	accessPath := *accessFile
+	if accessPath == "" {
+		accessPath = filepath.Join(store.Dir(), "access.json")
+	}
+	users, err := access.Open(accessPath)
+	if err != nil {
+		return err
+	}
 	auth, err := dashboard.NewAuthenticator(context.Background(), dashboard.OIDCConfig{
 		Issuer:         *issuer,
 		ClientID:       *clientID,
@@ -292,6 +303,7 @@ func cmdServe(args []string) error {
 		AllowedEmails:  splitList(*allowEmails),
 		AllowedDomains: splitList(*allowDomains),
 		AllowedSubs:    splitList(*allowSubs),
+		Admins:         splitList(*admins),
 		CookieSecret:   []byte(os.Getenv("COVIBE_COOKIE_SECRET")),
 		Insecure:       *insecure || *noAuth,
 		NoAuth:         *noAuth,
@@ -305,6 +317,7 @@ func cmdServe(args []string) error {
 	}
 	cfg := dashboard.Config{
 		Store:         store,
+		Access:        users,
 		Auth:          auth,
 		RelayHost:     *relayHost,
 		WebClient:     *webClient,
@@ -350,7 +363,7 @@ func cmdServe(args []string) error {
 	if *noAuth {
 		mode = "NO-AUTH (dev)"
 	}
-	fmt.Printf("covibe dashboard on http://%s  [%s]  spool=%s\n", *addr, mode, store.Dir())
+	fmt.Printf("covibe dashboard on http://%s  [%s]  spool=%s  access=%s\n", *addr, mode, store.Dir(), accessPath)
 	if err := httpSrv.ListenAndServe(); err != nil && err.Error() != "http: Server closed" {
 		return err
 	}

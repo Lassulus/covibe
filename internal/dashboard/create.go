@@ -139,7 +139,17 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := newSessionID()
+	// Claim ownership before launching: the creator must see their own session on
+	// the very first refresh, which can land before this handler returns. A
+	// failed launch leaves an orphan ACL, dropped by Prune.
+	owner := s.callerOf(r).key()
+	if owner != "" {
+		_ = s.cfg.Access.SetOwner(id, owner)
+	}
 	if err := s.cfg.Create(CreateSpec{ID: id, Name: req.Name, Dir: dir, Model: model, Thinking: thinking}); err != nil {
+		if owner != "" {
+			_ = s.cfg.Access.Drop(id)
+		}
 		http.Error(w, "launch failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}

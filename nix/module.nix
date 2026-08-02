@@ -20,6 +20,9 @@ let
     else
       cfg.webClient;
 
+  # The user directory / member lists live next to, not inside, the tmpfs spool.
+  accessDir = builtins.dirOf d.accessFile;
+
   # COVIBE_* environment shared by the dashboard service and — when
   # installGlobally is set — every interactive `covibe start`/`session` so both
   # sides agree on the spool directory, relay and multiplexer.
@@ -60,6 +63,8 @@ let
       COVIBE_ALLOW_EMAILS = lib.concatStringsSep "," d.allow.emails;
       COVIBE_ALLOW_DOMAINS = lib.concatStringsSep "," d.allow.domains;
       COVIBE_ALLOW_SUBS = lib.concatStringsSep "," d.allow.subs;
+      COVIBE_ADMINS = lib.concatStringsSep "," d.admins;
+      COVIBE_ACCESS_FILE = d.accessFile;
       COVIBE_NO_AUTH = if d.noAuth then "1" else "0";
       COVIBE_INSECURE = if d.insecure then "1" else "0";
     }
@@ -322,6 +327,27 @@ in
         };
       };
 
+      admins = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [ "lassulus" ];
+        description = ''
+          Admin users, matched against the OIDC email, subject id or
+          preferred_username. Admins see every session and may manage the
+          members of any session. In noAuth mode everyone is an admin.
+        '';
+      };
+
+      accessFile = lib.mkOption {
+        type = lib.types.str;
+        default = "/var/lib/covibe/access.json";
+        description = ''
+          JSON file holding the user directory and the per-session member
+          lists. Must live outside the tmpfs spool (stateDir) so users and
+          session memberships survive a reboot.
+        '';
+      };
+
       apiKeysFile = lib.mkOption {
         type = lib.types.nullOr lib.types.path;
         default = null;
@@ -382,6 +408,7 @@ in
         "d ${cfg.socketDir}/zellij 0700 ${cfg.user} ${cfg.group} -"
       ]
       ++ lib.optional (d.workspaceRoot != "") "d ${d.workspaceRoot} 0700 ${cfg.user} ${cfg.group} -"
+      ++ lib.optional (d.accessFile != "") "d ${accessDir} 0700 ${cfg.user} ${cfg.group} -"
     );
 
     systemd.services.covibe-dashboard = lib.mkIf cfg.dashboard.enable {

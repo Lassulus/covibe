@@ -40,6 +40,16 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
   .links { flex:1; min-width:240px; display:flex; flex-direction:column; gap:.4rem; }
   .link { display:flex; gap:.4rem; }
   .link input { flex:1; background:#0b0e13; border:1px solid #2a2f37; color:var(--fg); padding:.3rem .45rem; font-family:ui-monospace,monospace; font-size:.78rem; }
+  .sharepanel td { background:var(--card); }
+  .sharebox { display:flex; flex-direction:column; gap:.4rem; max-width:560px; }
+  .sharebox .shead { color:var(--muted); font-size:.78rem; }
+  .member { display:flex; align-items:center; gap:.4rem; font-size:.8rem; }
+  .member .mkey { color:var(--muted); font-family:ui-monospace,monospace; font-size:.72rem; }
+  .member .mdel { border-color:#5a2a2a; padding:0 .4rem; line-height:1.2; }
+  .mnone { color:var(--muted); font-size:.78rem; }
+  .addrow { display:flex; gap:.4rem; align-items:center; flex-wrap:wrap; }
+  .addrow input { background:#0b0e13; border:1px solid #2a2f37; color:var(--fg); padding:.3rem .45rem; font-size:.78rem; min-width:220px; }
+  .adderr { color:#f85149; font-size:.78rem; }
   button { background:#21262d; color:var(--fg); border:1px solid #30363d; padding:.25rem .55rem; cursor:pointer; font-size:.78rem; }
   button:hover { border-color:var(--accent); }
   a.open { color:var(--accent); text-decoration:none; font-size:.78rem; margin:0 .35rem; }
@@ -64,6 +74,7 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
   <div>
     {{if .Relay}}<span class="badge">relay {{.Relay}}</span>{{end}}
     <span class="who">{{if .User.Email}}{{.User.Email}}{{else}}{{.User.Sub}}{{end}}</span>
+    {{if .IsAdmin}}<span class="badge">admin</span>{{end}}
     <a href="/logout">sign out</a>
   </div>
 </header>
@@ -93,6 +104,7 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
     <tbody id="list"></tbody>
   </table>
   <div id="empty" class="empty" hidden>No live sessions.{{if not .CanCreate}} Start one with <code>covibe start &lt;name&gt;</code>.{{end}}</div>
+  {{if .IsAdmin}}<datalist id="userlist"></datalist>{{end}}
 </main>
 <div id="panemodal" class="modal" hidden>
   <div class="modalbox">
@@ -108,6 +120,10 @@ const empty = document.getElementById('empty');
 // Rows are rebuilt wholesale every refresh, so remember which QR panels are
 // open — otherwise a QR you opened to scan vanishes on the next tick.
 const qrOpen = new Set();
+// Same story for the share panels, plus the half-typed name in their add box.
+const shareOpen = new Set();
+const shareDraft = new Map();
+const IS_ADMIN = {{.IsAdmin}};
 document.getElementById('paneclose').onclick = ()=>{ document.getElementById('panemodal').hidden = true; };
 
 function esc(s){ return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -130,9 +146,13 @@ const COLS = [
   {key:'name',     label:'name',      cls:'name',   sort:s=>(s.name||s.id).toLowerCase(),
    cell:s=>esc(s.name||s.id)+(s.viewOnly?'<span class="badge">view-only</span>':'')},
   {key:'dir',      label:'directory', cls:'meta',   sort:s=>(s.dir||'').toLowerCase(), cell:s=>esc(s.dir||'')},
+  {key:'owner',    label:'owner',     cls:'meta',   sort:s=>(s.owner||'').toLowerCase(), cell:s=>esc(s.owner||'')},
   {key:'origin',   label:'where',     cls:'meta',   sort:s=>origin(s).toLowerCase(),   cell:s=>esc(origin(s))},
   {key:'model',    label:'model',     cls:'meta',   sort:s=>(s.model||'').toLowerCase(), cell:s=>esc(s.model||'')},
   {key:'thinking', label:'thinking',  cls:'meta',   sort:s=>(s.thinking||'').toLowerCase(), cell:s=>esc(s.thinking||'')},
+  // Quiet by default: an unshared session shows a blank cell, not a zero.
+  {key:'members',  label:'shared',    cls:'num',    sort:s=>(s.members||[]).length,
+   cell:s=>{ const n = (s.members||[]).length; return n ? esc(n) : ''; }},
   // Age sorts on the raw timestamp: newest first means largest startedAt, so
   // the ascending direction is "youngest" and the label stays honest.
   {key:'age',      label:'age',       cls:'num',    sort:s=>-new Date(s.startedAt).getTime(),
@@ -197,8 +217,11 @@ function rowsFor(s){
   } else {
     body += '<span class="waiting">waiting for host…</span>';
   }
-  body += '<button class="pane" data-pane="'+esc(s.id)+'">pane</button> '+
-          '<button class="kill" data-kill="'+esc(s.id)+'">kill</button></td>';
+  if (s.canManage) body += '<button class="share" data-share="'+esc(s.id)+'">share</button> ';
+  body += '<button class="pane" data-pane="'+esc(s.id)+'">pane</button>';
+  // Kill answers 403 without manage rights, so don't offer a button that only fails.
+  if (s.canManage) body += ' <button class="kill" data-kill="'+esc(s.id)+'">kill</button>';
+  body += '</td>';
   tr.innerHTML = body;
   out.push(tr);
 
@@ -221,6 +244,73 @@ function rowsFor(s){
     out.push(panel);
   }
 
+  if (s.canManage){
+    const sp = document.createElement('tr');
+    sp.className = 'sharepanel';
+    sp.hidden = true;
+    const members = s.members || [];
+    let h = '<td colspan="'+(COLS.length+1)+'"><div class="sharebox">'+
+            '<div class="shead">owner: '+esc(s.owner||'—')+' · shared with '+members.length+'</div>';
+    if (!members.length) h += '<div class="mnone">not shared with anyone yet</div>';
+    members.forEach(m=>{
+      h += '<div class="member"><span>'+esc(m.label||m.key)+'</span>';
+      if (m.label && m.key && m.label !== m.key) h += '<span class="mkey">'+esc(m.key)+'</span>';
+      h += '<button class="mdel" data-del="'+esc(m.key)+'" title="remove">×</button></div>';
+    });
+    h += '<div class="addrow"><input class="adduser" type="text" placeholder="email or username" autocomplete="off"'+
+         (IS_ADMIN ? ' list="userlist"' : '')+'>'+
+         '<button class="addbtn">add</button><span class="adderr"></span></div>';
+    sp.innerHTML = h + '</div></td>';
+    out.push(sp);
+
+    const err = sp.querySelector('.adderr');
+    const input = sp.querySelector('input.adduser');
+    const addBtn = sp.querySelector('.addbtn');
+    input.dataset.sid = s.id;
+    input.value = shareDraft.get(s.id) || '';
+    input.oninput = ()=> shareDraft.set(s.id, input.value);
+    input.onkeydown = (ev)=>{ if (ev.key === 'Enter'){ ev.preventDefault(); addBtn.onclick(); } };
+    addBtn.onclick = async ()=>{
+      const who = input.value.trim();
+      if (!who) return;
+      err.textContent = '';
+      addBtn.disabled = true;
+      try {
+        const res = await fetch('/api/v1/sessions/'+encodeURIComponent(s.id)+'/members', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({user: who}),
+        });
+        if (!res.ok){ err.textContent = (await res.text()).trim() || ('error '+res.status); return; }
+        input.value = '';
+        shareDraft.delete(s.id);
+        refresh();
+      } catch(ex){ err.textContent = String(ex); }
+      finally { addBtn.disabled = false; }
+    };
+    sp.querySelectorAll('button[data-del]').forEach(b=>{
+      b.onclick = async ()=>{
+        err.textContent = '';
+        b.disabled = true;
+        try {
+          const res = await fetch('/api/v1/sessions/'+encodeURIComponent(s.id)+'/members/'+encodeURIComponent(b.dataset.del),
+                                  {method:'DELETE'});
+          if (!res.ok){ err.textContent = (await res.text()).trim() || ('error '+res.status); b.disabled = false; return; }
+        } catch(ex){ err.textContent = String(ex); b.disabled = false; return; }
+        refresh();
+      };
+    });
+
+    const shareBtn = tr.querySelector('button[data-share]');
+    const showShare = (on)=>{
+      sp.hidden = !on;
+      shareBtn.textContent = on ? 'hide share' : 'share';
+      if (on) shareOpen.add(s.id); else shareOpen.delete(s.id);
+    };
+    shareBtn.onclick = ()=> showShare(sp.hidden);
+    if (shareOpen.has(s.id)) showShare(true);
+  }
+
   const qrBtn = tr.querySelector('button[data-qr]');
   if (qrBtn && panel){
     const img = panel.querySelector('img');
@@ -235,7 +325,8 @@ function rowsFor(s){
     if (qrOpen.has(s.id)) show(true);
   }
   tr.querySelector('button[data-pane]').onclick = ()=>showPane(s.id, s.name||s.id);
-  tr.querySelector('button[data-kill]').onclick = async (ev)=>{
+  const killBtn = tr.querySelector('button[data-kill]');
+  if (killBtn) killBtn.onclick = async (ev)=>{
     if (!confirm('Kill session '+(s.name||s.id)+'?')) return;
     const btn = ev.currentTarget;
     btn.disabled = true;
@@ -252,9 +343,19 @@ function rowsFor(s){
 
 let current = [];
 function render(){
+  // A rebuild mid-typing would drop the caret out of a share box, so put it back.
+  const act = document.activeElement;
+  const focusSid = act && act.classList.contains('adduser') ? act.dataset.sid : null;
   const rows = [];
   sorted(current).forEach(s=>rows.push(...rowsFor(s)));
   list.replaceChildren(...rows);
+  if (focusSid){
+    list.querySelectorAll('input.adduser').forEach(el=>{
+      if (el.dataset.sid !== focusSid) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    });
+  }
   empty.hidden = current.length > 0;
   table.hidden = current.length === 0;
 }
@@ -341,6 +442,23 @@ if (form){
     } catch(ex){ err.textContent = String(ex); }
     finally { btn.disabled = false; }
   });
+}
+// Only admins may list users, so only admins ask — a 403 here would be noise.
+if (IS_ADMIN){
+  (async ()=>{
+    const dl = document.getElementById('userlist');
+    if (!dl) return;
+    try {
+      const res = await fetch('/api/v1/users', {headers:{'Accept':'application/json'}});
+      if (!res.ok) return;
+      (await res.json() || []).forEach(u=>{
+        const o = document.createElement('option');
+        o.value = u.key;
+        o.textContent = (u.label || u.key) + (u.email && u.email !== u.key ? ' · ' + u.email : '');
+        dl.appendChild(o);
+      });
+    } catch(e){ /* datalist stays empty */ }
+  })();
 }
 renderHead();
 refresh();
