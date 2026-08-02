@@ -49,9 +49,6 @@ func (s Server) argv(args ...string) []string {
 // milliseconds; a hung one must not wedge an HTTP handler.
 const oneShotTimeout = 5 * time.Second
 
-// Run executes a one-shot tmux command on this server and returns stdout.
-func (s Server) Run(args ...string) ([]byte, error) { return s.run(args...) }
-
 // run executes a one-shot tmux command and returns stdout.
 func (s Server) run(args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), oneShotTimeout)
@@ -69,9 +66,9 @@ func (s Server) run(args ...string) ([]byte, error) {
 	return out, nil
 }
 
-// Target names a tmux session exactly. The "=" prefix stops tmux from resolving
-// a prefix match to some other session.
-func Target(session string) string { return "=" + session }
+// sessionTarget names a tmux session exactly. The "=" prefix stops tmux from
+// resolving a prefix match to some other session.
+func sessionTarget(session string) string { return "=" + session }
 
 // paneTarget names the active pane of a session exactly. A bare "=name" is a
 // session target and tmux rejects it where a pane is expected ("can't find
@@ -80,7 +77,7 @@ func paneTarget(session string) string { return "=" + session + ":" }
 
 // HasSession reports whether the named session exists on this server.
 func (s Server) HasSession(session string) bool {
-	_, err := s.run("has-session", "-t", Target(session))
+	_, err := s.run("has-session", "-t", sessionTarget(session))
 	return err == nil
 }
 
@@ -189,7 +186,7 @@ func hexBytes(data []byte) []string {
 
 // Kill terminates a session on this server.
 func (s Server) Kill(session string) error {
-	_, err := s.run("kill-session", "-t", Target(session))
+	_, err := s.run("kill-session", "-t", sessionTarget(session))
 	return err
 }
 
@@ -203,7 +200,6 @@ type Client struct {
 
 	mu     sync.Mutex
 	closed bool
-	cmdNum int
 }
 
 // pauseAfter is how many seconds of backlog tmux tolerates for this client
@@ -222,7 +218,7 @@ func (s Server) Attach(ctx context.Context, session string, cols, rows int) (*Cl
 	if session == "" {
 		return nil, errors.New("session required")
 	}
-	argv := s.argv("-C", "attach-session", "-t", Target(session))
+	argv := s.argv("-C", "attach-session", "-t", sessionTarget(session))
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) // #nosec G204 -- argv is built here from covibe's own records
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -284,7 +280,6 @@ func (c *Client) command(line string) error {
 	if c.closed {
 		return errors.New("client closed")
 	}
-	c.cmdNum++
 	_, err := io.WriteString(c.stdin, line+"\n")
 	return err
 }

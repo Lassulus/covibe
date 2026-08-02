@@ -18,9 +18,6 @@ func TestAPIKeysValid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ks.Enabled() {
-		t.Fatal("expected keys enabled")
-	}
 	for _, good := range []string{"alpha", "bravo", "charlie"} {
 		if !ks.Valid(good) {
 			t.Errorf("key %q should be valid", good)
@@ -32,7 +29,7 @@ func TestAPIKeysValid(t *testing.T) {
 		}
 	}
 	var empty APIKeys
-	if empty.Enabled() || empty.Valid("anything") {
+	if empty.Valid("anything") {
 		t.Fatal("empty key set must reject everything")
 	}
 }

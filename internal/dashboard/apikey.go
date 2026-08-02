@@ -124,9 +124,6 @@ func firstField(pair string) string {
 	return "…"
 }
 
-// Enabled reports whether any key is configured.
-func (k APIKeys) Enabled() bool { return len(k.digests) > 0 }
-
 // Valid reports whether token matches a configured key (constant-time, and
 // never true when no keys are configured or the token is empty).
 func (k APIKeys) Valid(token string) bool {

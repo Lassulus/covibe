@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/lassulus/covibe/internal/tmuxctl"
 )
 
 // Spec describes a session to launch.
@@ -293,13 +295,10 @@ func (t tmux) Launch(s Spec) error {
 		// a bare "=name" is rejected ("no such session"). The trailing colon
 		// makes it the session's current pane, and the option still lands on the
 		// session.
-		tag := append(tmuxArgv(s.Socket), "set-option", "-t", "="+s.Session+":", IDOption, s.ID)
+		tag := append(tmuxArgv(s.Socket), "set-option", "-t", "="+s.Session+":", tmuxctl.IDOption, s.ID)
 		if err := run(tag); err != nil {
 			return fmt.Errorf("tag session with covibe id: %w", err)
 		}
 	}
 	return nil
 }
-
-// IDOption is the tmux user option holding a session's covibe id.
-const IDOption = "@covibe_id"

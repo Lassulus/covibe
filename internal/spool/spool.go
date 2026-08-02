@@ -140,8 +140,8 @@ func (s *Store) PaneFilePath(id string) string {
 	return filepath.Join(s.dir, id+".pane")
 }
 
-// TmuxDir is the directory holding covibe's tmux server sockets.
-func (s *Store) TmuxDir() string { return filepath.Join(s.dir, "tmux") }
+// tmuxDir is the directory holding covibe's tmux server sockets.
+func (s *Store) tmuxDir() string { return filepath.Join(s.dir, "tmux") }
 
 // TmuxSocket is the socket of the tmux server that runs one covibe session.
 //
@@ -157,7 +157,7 @@ func (s *Store) TmuxDir() string { return filepath.Join(s.dir, "tmux") }
 // operator legibility and the session's short id for uniqueness, and stays well
 // clear of sun_path's ~108 bytes.
 func (s *Store) TmuxSocket(user, sessionID string) (string, error) {
-	dir := s.TmuxDir()
+	dir := s.tmuxDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create tmux socket dir: %w", err)
 	}

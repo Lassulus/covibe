@@ -519,13 +519,17 @@ func TestTerminalSurvivesSessionRename(t *testing.T) {
 	if !ok {
 		t.Fatal("expected a drivable session")
 	}
-	// Stamp the tag the launcher would have set, then rename behind our back.
-	if _, err := srv.Run("set-option", "-t", "="+rec.MuxSession+":", tmuxctl.IDOption, rec.ID); err != nil {
-		t.Fatal(err)
+	// Do what a user with a shell in the pane would: tag the session the way the
+	// launcher does, then rename it behind the dashboard's back.
+	tmuxDo := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-S", rec.MuxSocket}, args...)
+		if out, err := exec.Command("tmux", full...).CombinedOutput(); err != nil {
+			t.Fatalf("tmux %v: %v: %s", args, err, out)
+		}
 	}
-	if _, err := srv.Run("rename-session", "-t", "="+rec.MuxSession, "renamed-by-the-user"); err != nil {
-		t.Fatal(err)
-	}
+	tmuxDo("set-option", "-t", "="+rec.MuxSession+":", tmuxctl.IDOption, rec.ID)
+	tmuxDo("rename-session", "-t", "="+rec.MuxSession, "renamed-by-the-user")
 
 	if got := tmuxTarget(srv, *rec); got != "renamed-by-the-user" {
 		t.Fatalf("target after rename = %q, want the renamed session", got)
