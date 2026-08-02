@@ -268,7 +268,21 @@ func cmdList(args []string) error {
 		if link == "" {
 			link = "(starting)"
 		}
-		fmt.Printf("%-8s %-16s %-8s %s\n\t%s\n", r.Status, r.Name, r.Mux, r.Dir, link)
+		fmt.Printf("%-8s %-16s %-8s %s\n", r.Status, r.Name, r.Mux, r.Dir)
+		fmt.Printf("\tid %s\n", r.ID)
+		// Each covibe session owns one mux session; print the exact target so
+		// two sessions sharing a display name are still tellable apart.
+		if r.MuxSession != "" {
+			target := r.MuxSession
+			if r.MuxSocket != "" {
+				target += "  on " + r.MuxSocket
+			}
+			if r.Remote {
+				target += "  (on " + orDefault(r.Host, "another machine") + ")"
+			}
+			fmt.Printf("\t%s %s\n", r.Mux, target)
+		}
+		fmt.Printf("\t%s\n", link)
 	}
 	return nil
 }
@@ -300,15 +314,34 @@ func cmdAttach(args []string) error {
 	if err != nil {
 		return err
 	}
-	var match *spool.Record
+	// An id or a mux session name is unique; a display name is not, and picking
+	// the first of two sessions called "proj" is exactly the kind of guess that
+	// drops someone into the wrong shell.
+	var exact *spool.Record
+	var byName []*spool.Record
 	for i, r := range recs {
-		if r.ID == posName || r.Name == posName || r.MuxSession == posName {
-			match = &recs[i]
-			break
+		switch {
+		case r.ID == posName || r.MuxSession == posName:
+			exact = &recs[i]
+		case r.Name == posName:
+			byName = append(byName, &recs[i])
 		}
 	}
+	match := exact
 	if match == nil {
-		return fmt.Errorf("no live session %q (covibe list shows what is running here)", posName)
+		switch len(byName) {
+		case 0:
+			return fmt.Errorf("no live session %q (covibe list shows what is running here)", posName)
+		case 1:
+			match = byName[0]
+		default:
+			var b strings.Builder
+			fmt.Fprintf(&b, "%d live sessions are called %q; attach one by id:\n", len(byName), posName)
+			for _, r := range byName {
+				fmt.Fprintf(&b, "  covibe attach %s\t(%s, %s)\n", r.ID, orDefault(r.MuxSession, "no mux session"), r.Dir)
+			}
+			return fmt.Errorf("%s", strings.TrimRight(b.String(), "\n"))
+		}
 	}
 	if match.Remote {
 		return fmt.Errorf("session %q runs on %s; attach it there, or open its terminal in the dashboard", posName, orDefault(match.Host, "another machine"))

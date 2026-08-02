@@ -83,3 +83,28 @@ func TestSessionName(t *testing.T) {
 		t.Fatalf("fallback base: got %q", got)
 	}
 }
+
+// One socket holds every session of one covibe user, so the tmux session has to
+// carry the covibe id: it is the only way back from a pane to the session it
+// belongs to when two sessions share a display name.
+func TestTmuxCommandStampsSessionID(t *testing.T) {
+	got, err := (tmux{}).Command(Spec{
+		ID:        "covibe-85de7e348a172088",
+		Session:   "proj-8a172088",
+		Name:      "proj",
+		Socket:    "/run/covibe/tmux/alice.sock",
+		InnerArgv: []string{"covibe", "session"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"tmux", "-S", "/run/covibe/tmux/alice.sock", "new-session", "-d",
+		"-s", "proj-8a172088", "-n", "proj",
+		"-e", "COVIBE_SESSION_ID=covibe-85de7e348a172088",
+		"--", "covibe", "session",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("\n got %v\nwant %v", got, want)
+	}
+}

@@ -89,7 +89,7 @@ func (o Options) spec() (mux.Launcher, mux.Spec, string, error) {
 	if err != nil {
 		return nil, mux.Spec{}, "", err
 	}
-	return l, mux.Spec{Name: o.Name, Dir: o.Dir, Session: sess, Socket: o.MuxSocket, InnerArgv: inner}, sess, nil
+	return l, mux.Spec{ID: id, Name: o.Name, Dir: o.Dir, Session: sess, Socket: o.MuxSocket, InnerArgv: inner}, sess, nil
 }
 
 // resolveSession fills a stable id (generating one when empty) and the derived

@@ -242,6 +242,12 @@ func (tmux) Command(s Spec) ([]string, error) {
 		return nil, fmt.Errorf("tmux: session name required")
 	}
 	argv := append(tmuxArgv(s.Socket), "new-session", "-d", "-s", s.Session, "-n", s.Name)
+	// Stamp the covibe id into the tmux session environment: from inside a pane
+	// (or `show-environment`) that is the only way back from "which tmux session
+	// is this" to "which covibe session is this".
+	if s.ID != "" {
+		argv = append(argv, "-e", "COVIBE_SESSION_ID="+s.ID)
+	}
 	if s.Dir != "" {
 		argv = append(argv, "-c", s.Dir)
 	}
