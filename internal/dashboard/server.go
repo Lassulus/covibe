@@ -191,7 +191,6 @@ type sessionView struct {
 	Dir        string    `json:"dir"`
 	Host       string    `json:"host,omitempty"`
 	Status     string    `json:"status"`
-	Mux        string    `json:"mux,omitempty"`
 	MuxSession string    `json:"muxSession,omitempty"`
 	Model      string    `json:"model,omitempty"`
 	Thinking   string    `json:"thinking,omitempty"`
@@ -219,7 +218,6 @@ func (s *Server) viewOf(r spool.Record, c caller) sessionView {
 		Dir:        r.Dir,
 		Host:       r.Host,
 		Status:     r.Status,
-		Mux:        r.Mux,
 		MuxSession: r.MuxSession,
 		Model:      r.Model,
 		Thinking:   r.Thinking,
@@ -286,7 +284,7 @@ func (s *Server) handleKill(w http.ResponseWriter, r *http.Request) {
 		if srv, ok := terminalServer(rec); ok {
 			target = tmuxTarget(srv, rec)
 		}
-		mux.Kill(rec.Mux, rec.MuxSocket, target)
+		mux.Kill(rec.MuxSocket, target)
 	}
 	// A remote wrapper lives on another machine: signaling rec.PID here could hit
 	// an unrelated local process. The wrapper's next heartbeat sees the ended
@@ -388,10 +386,10 @@ func (s *Server) handlePane(w http.ResponseWriter, r *http.Request) {
 		// tmux is the emulator: its grid is what a human sees. The wrapper's own
 		// ring buffer keeps every byte a TUI ever overwrote, so prefer this.
 		out, err = srv.Capture(tmuxTarget(srv, rec), tmuxctl.CaptureOpts{Escapes: r.URL.Query().Get("strip") != "1"})
-	case rec.Remote:
-		out, err = os.ReadFile(s.cfg.Store.PaneFilePath(rec.ID))
 	default:
-		out, err = readPane(s.cfg.Store.PanePath(rec.ID))
+		// A remote wrapper cannot be captured from here; it pushes its own
+		// snapshot with each heartbeat.
+		out, err = os.ReadFile(s.cfg.Store.PaneFilePath(rec.ID))
 	}
 	if err != nil {
 		http.Error(w, "pane unavailable", http.StatusServiceUnavailable)

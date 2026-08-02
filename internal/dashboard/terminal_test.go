@@ -20,19 +20,18 @@ import (
 	"github.com/lassulus/covibe/internal/tmuxctl"
 )
 
-// Only a local tmux session on a socket covibe owns can be driven: a zellij
-// session, a remote wrapper's session and a CLI session on the default server
-// all lack the handle, and the UI must not offer a terminal it cannot open.
+// Only a session on a tmux socket covibe owns can be driven: a session started
+// without one and a remote wrapper's session both lack the handle, and the UI
+// must not offer a terminal it cannot open.
 func TestTerminalServerRequiresOwnedTmuxSocket(t *testing.T) {
-	base := spool.Record{Mux: "tmux", MuxSocket: "/run/covibe/tmux/alice.sock", MuxSession: "s1"}
+	base := spool.Record{MuxSocket: "/run/covibe/tmux/alice-1.sock", MuxSession: "s1"}
 	if _, ok := terminalServer(base); !ok {
 		t.Fatal("a local tmux session on a covibe socket should be drivable")
 	}
 	for name, rec := range map[string]spool.Record{
-		"zellij":     {Mux: "zellij", MuxSocket: base.MuxSocket, MuxSession: "s1"},
-		"no socket":  {Mux: "tmux", MuxSession: "s1"},
-		"no session": {Mux: "tmux", MuxSocket: base.MuxSocket},
-		"remote":     {Mux: "tmux", MuxSocket: base.MuxSocket, MuxSession: "s1", Remote: true},
+		"no socket":  {MuxSession: "s1"},
+		"no session": {MuxSocket: base.MuxSocket},
+		"remote":     {MuxSocket: base.MuxSocket, MuxSession: "s1", Remote: true},
 	} {
 		if _, ok := terminalServer(rec); ok {
 			t.Errorf("%s: should not be drivable", name)
@@ -117,7 +116,7 @@ func termServer(t *testing.T, paneCmd string) (*Server, string) {
 
 	rec := &spool.Record{
 		ID: "term-1", Name: "termy", Status: spool.StatusLive, PID: os.Getpid(),
-		Mux: "tmux", MuxSession: muxSession, MuxSocket: sock, StartedAt: time.Now(),
+		MuxSession: muxSession, MuxSocket: sock, StartedAt: time.Now(),
 	}
 	if err := store.Save(rec); err != nil {
 		t.Fatal(err)
@@ -192,12 +191,12 @@ func TestTerminalEndpointsRespectAccess(t *testing.T) {
 
 	// A session with no drivable terminal is a conflict, not a 404: the caller
 	// can see it, it just has no terminal.
-	plain := &spool.Record{ID: "zj-1", Name: "zellij one", Status: spool.StatusLive, PID: os.Getpid(), Mux: "zellij", StartedAt: time.Now()}
+	plain := &spool.Record{ID: "bare-1", Name: "no tmux", Status: spool.StatusLive, PID: os.Getpid(), StartedAt: time.Now()}
 	if err := s.cfg.Store.Save(plain); err != nil {
 		t.Fatal(err)
 	}
-	if rec := as(t, s, bossID, "GET", "/api/v1/sessions/zj-1/screen", ""); rec.Code != http.StatusConflict {
-		t.Fatalf("zellij screen: %d want 409", rec.Code)
+	if rec := as(t, s, bossID, "GET", "/api/v1/sessions/bare-1/screen", ""); rec.Code != http.StatusConflict {
+		t.Fatalf("screen for a session with no tmux socket: %d want 409", rec.Code)
 	}
 
 	// The listing tells the UI which rows may offer a terminal.
@@ -212,9 +211,9 @@ func TestTerminalEndpointsRespectAccess(t *testing.T) {
 			if !v.HasTerminal || !v.CanWrite {
 				t.Fatalf("tmux session view: %+v", v)
 			}
-		case "zj-1":
+		case "bare-1":
 			if v.HasTerminal {
-				t.Fatalf("zellij session advertises a terminal: %+v", v)
+				t.Fatalf("session without a tmux socket advertises a terminal: %+v", v)
 			}
 		}
 	}

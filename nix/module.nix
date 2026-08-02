@@ -8,8 +8,8 @@ self:
 let
   cfg = config.services.covibe;
   d = cfg.dashboard;
-  # Absolute omp path so covibe execs the (patched) omp regardless of the mux
-  # server's PATH — a pre-existing zellij/tmux server started before a deploy
+  # Absolute omp path so covibe execs the (patched) omp regardless of the tmux
+  # server's PATH — a pre-existing tmux server started before a deploy
   # otherwise resolves "omp" to the old binary, which ignores OMP_COLLAB_*.
   ompBin = if cfg.ompPackage != null then "${cfg.ompPackage}/bin/omp" else cfg.omp;
   # When a self-hosted collab-web root is set, browser links point at covibe's
@@ -25,7 +25,7 @@ let
 
   # COVIBE_* environment shared by the dashboard service and — when
   # installGlobally is set — every interactive `covibe start`/`session` so both
-  # sides agree on the spool directory, relay and multiplexer.
+  # sides agree on the spool directory, relay and tmux session name.
   sharedEnv = lib.filterAttrs (_: v: v != null && v != "") {
     COVIBE_STATE_DIR = cfg.stateDir;
     COVIBE_OMP = ompBin;
@@ -33,23 +33,12 @@ let
     COVIBE_RELAY_HOST = cfg.relayHost;
     COVIBE_WEB_CLIENT = webClientUrl;
     COVIBE_LOCAL_RELAY = "ws://" + d.addr;
-    COVIBE_MUX = cfg.mux;
     COVIBE_MUX_SESSION = cfg.muxSession;
     OMP_AUTH_BROKER_URL = cfg.authBrokerUrl;
   };
 
-  # Multiplexer control-socket dirs. Shared ONLY by the dashboard service and
-  # the covibe user's interactive shells — NEVER globally: a global export
-  # redirects every other user's tmux/zellij onto ${cfg.socketDir}, which they
-  # cannot write, breaking their login shell.
-  socketEnv = {
-    ZELLIJ_SOCKET_DIR = "${cfg.socketDir}/zellij";
-    TMUX_TMPDIR = cfg.socketDir;
-  };
-
   dashboardEnv =
     sharedEnv
-    // socketEnv
     // lib.filterAttrs (_: v: v != null && v != "") {
       COVIBE_ADDR = d.addr;
       COVIBE_WORKSPACE = d.workspaceRoot;
@@ -72,19 +61,29 @@ let
     }
     // d.extraSettings;
 
-  muxPackage = if cfg.mux == "tmux" then pkgs.tmux else pkgs.zellij;
-  # tmux is on the dashboard PATH even for zellij deployments: the browser
-  # terminal drives tmux control mode and capture-pane regardless of the mux
-  # sessions are launched in.
-  dashboardPath = lib.unique (
-    [
-      muxPackage
-      pkgs.tmux
-    ]
-    ++ lib.optional (cfg.ompPackage != null) cfg.ompPackage
-  );
+  # tmux is the only backend: every session runs on its own tmux socket under
+  # <stateDir>/tmux, which is also what the browser terminal drives over
+  # control mode.
+  dashboardPath = [ pkgs.tmux ] ++ lib.optional (cfg.ompPackage != null) cfg.ompPackage;
 in
 {
+  imports = [
+    # Deliberate breaking change: covibe no longer has a second multiplexer
+    # backend, so a stale `mux` definition must fail loudly instead of being
+    # silently ignored. socketDir went with it — only the dropped backend
+    # needed a shared control-socket directory.
+    (lib.mkRemovedOptionModule [ "services" "covibe" "mux" ] ''
+      tmux is the only multiplexer covibe supports; there is no backend to
+      choose. Delete this option.
+    '')
+    (lib.mkRemovedOptionModule [ "services" "covibe" "socketDir" ] ''
+      covibe runs one tmux server per session, on its own socket under
+      <stateDir>/tmux, and joins it with `covibe attach <name>` — there is no
+      shared control-socket directory left to point anywhere. Delete this
+      option.
+    '')
+  ];
+
   options.services.covibe = {
     enable = lib.mkEnableOption "covibe co-vibing sessions";
 
@@ -154,44 +153,10 @@ in
       '';
     };
 
-    mux = lib.mkOption {
-      type = lib.types.enum [
-        "zellij"
-        "tmux"
-      ];
-      default = "tmux";
-      description = ''
-        Terminal multiplexer covibe launches sessions in. The browser terminal
-        (the dashboard's `term` button and /api/v1/sessions/<id>/terminal)
-        requires tmux: covibe drives it over tmux control mode. zellij sessions
-        still work, but expose no interactive terminal in the web UI.
-      '';
-    };
-
     muxSession = lib.mkOption {
       type = lib.types.str;
       default = "covibe";
-      description = "Multiplexer session name that covibe tabs are opened in.";
-    };
-
-    socketDir = lib.mkOption {
-      type = lib.types.str;
-      default = cfg.stateDir;
-      defaultText = lib.literalExpression "config.services.covibe.stateDir";
-      description = ''
-        Directory pinning the multiplexer control sockets (ZELLIJ_SOCKET_DIR =
-        <socketDir>/zellij, TMUX_TMPDIR = <socketDir>). Set on the dashboard
-        service and the covibe user's interactive shells (never globally, which
-        would break other users' tmux/zellij) so zellij sessions and that user's
-        `zellij attach` share one server. tmux sessions do not use it: covibe
-        runs one tmux server per session, on its own socket under
-        <stateDir>/tmux, which is what the dashboard drives for the browser
-        terminal. A server per session is what keeps sharing honest — a shell in
-        a pane can reach every session on its socket through $TMUX, so one
-        session per socket means a member cannot switch, inject or peek into
-        another session. Reach them with `covibe attach <name>`, not a bare
-        `tmux attach`.
-      '';
+      description = "tmux session name that covibe windows are opened in.";
     };
 
     omp = lib.mkOption {
@@ -207,9 +172,9 @@ in
       description = ''
         omp package placed on the dashboard service PATH and launched inside each
         session (COVIBE_OMP points at its binary by absolute path, so sessions do
-        not depend on the multiplexer server's PATH). Defaults to covibe's
-        patched omp: env-driven supervised collab hosting plus the self-hosted
-        collab-web SPA. null leaves omp resolution to PATH.
+        not depend on the tmux server's PATH). Defaults to covibe's patched omp:
+        env-driven supervised collab hosting plus the self-hosted collab-web SPA.
+        null leaves omp resolution to PATH.
       '';
     };
 
@@ -229,16 +194,16 @@ in
       default = true;
       description = ''
         Install covibe system-wide and export the shared COVIBE_* environment so
-        interactive `covibe start`/`session` use the same spool, relay and mux
-        as the dashboard.
+        interactive `covibe start`/`session` use the same spool, relay and tmux
+        session name as the dashboard.
       '';
     };
 
     extraPackages = lib.mkOption {
       type = lib.types.listOf lib.types.package;
-      default = [ (if cfg.mux == "tmux" then pkgs.tmux else pkgs.zellij) ];
+      default = [ pkgs.tmux ];
       defaultText = lib.literalExpression "[ pkgs.tmux ]";
-      description = "Extra packages (the multiplexer, etc.) to install alongside covibe.";
+      description = "Extra packages (tmux, etc.) to install alongside covibe.";
     };
 
     dashboard = {
@@ -450,31 +415,15 @@ in
     environment.systemPackages = lib.mkIf cfg.installGlobally ([ cfg.package ] ++ cfg.extraPackages);
     environment.variables = lib.mkIf cfg.installGlobally sharedEnv;
 
-    # Scope the socket dirs to the covibe user's interactive shells so their
-    # `zellij attach` finds web-created zellij sessions; a global export
-    # (environment.variables) would point every other user's tmux/zellij at
-    # ${cfg.socketDir}, which only the covibe user can write — breaking their
-    # login shell. tmux sessions live on covibe's own per-user socket instead
-    # (see socketDir), so `covibe attach` is the way in.
-    environment.interactiveShellInit = lib.mkIf cfg.installGlobally ''
-      if [ "$(id -un)" = ${lib.escapeShellArg cfg.user} ]; then
-        export ZELLIJ_SOCKET_DIR=${lib.escapeShellArg socketEnv.ZELLIJ_SOCKET_DIR}
-        export TMUX_TMPDIR=${lib.escapeShellArg socketEnv.TMUX_TMPDIR}
-      fi
-    '';
-
-    systemd.tmpfiles.rules = lib.unique (
-      [
-        "d ${cfg.stateDir} 0700 ${cfg.user} ${cfg.group} -"
-        "d ${cfg.socketDir} 0700 ${cfg.user} ${cfg.group} -"
-        "d ${cfg.socketDir}/zellij 0700 ${cfg.user} ${cfg.group} -"
-        # covibe's own tmux sockets (<stateDir>/tmux/<key>.sock, one per covibe
-        # user); pre-created so a fresh boot has it before the first session.
-        "d ${cfg.stateDir}/tmux 0700 ${cfg.user} ${cfg.group} -"
-      ]
-      ++ lib.optional (d.workspaceRoot != "") "d ${d.workspaceRoot} 0700 ${cfg.user} ${cfg.group} -"
-      ++ lib.optional (d.accessFile != "") "d ${accessDir} 0700 ${cfg.user} ${cfg.group} -"
-    );
+    systemd.tmpfiles.rules = [
+      "d ${cfg.stateDir} 0700 ${cfg.user} ${cfg.group} -"
+      # covibe's own tmux sockets (<stateDir>/tmux/<owner>-<id>.sock, one
+      # server per session); pre-created so a fresh boot has it before the
+      # first session.
+      "d ${cfg.stateDir}/tmux 0700 ${cfg.user} ${cfg.group} -"
+    ]
+    ++ lib.optional (d.workspaceRoot != "") "d ${d.workspaceRoot} 0700 ${cfg.user} ${cfg.group} -"
+    ++ lib.optional (d.accessFile != "") "d ${accessDir} 0700 ${cfg.user} ${cfg.group} -";
 
     systemd.services.covibe-dashboard = lib.mkIf cfg.dashboard.enable {
       description = "covibe co-vibing session dashboard";
@@ -482,8 +431,8 @@ in
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
       environment = dashboardEnv;
-      # The multiplexer client + server binaries (and optionally omp) must be
-      # reachable so the dashboard can open new sessions.
+      # The tmux binary (and optionally omp) must be reachable so the dashboard
+      # can open new sessions.
       path = dashboardPath;
       serviceConfig = {
         ExecStart = "${lib.getExe cfg.package} serve";
@@ -493,7 +442,7 @@ in
         RestartSec = 2;
         EnvironmentFile = lib.mkIf (d.environmentFile != null) [ d.environmentFile ];
         # Kill only the dashboard process on stop/restart, never the whole
-        # control group: the mux server and the omp sessions it spawned must
+        # control group: the tmux servers and the omp sessions they host must
         # outlive dashboard restarts. Those sessions are full-power dev shells,
         # so the service is intentionally not filesystem-sandboxed.
         KillMode = "process";

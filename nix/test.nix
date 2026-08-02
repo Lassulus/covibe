@@ -1,13 +1,13 @@
 # NixOS VM test: boots the covibe module, then drives the dashboard over HTTP
-# to prove the full path — service up, web-initiated session creation, mux
+# to prove the full path — service up, web-initiated session creation, tmux
 # launch, and /collab-link capture — works end to end.
 #
-# It exercises the default multiplexer (tmux): the dashboard creates a detached
-# tmux session on a covibe-owned socket (<stateDir>/tmux/<user>.sock) and opens
-# the omp pane in it, with no client attached — the same socket the browser
-# terminal drives over control mode. omp is not packaged, so a fake `omp` stands
-# in: it emits a realistic /collab banner when the session wrapper auto-types
-# /collab, which is exactly what the link sniffer consumes.
+# The dashboard creates a detached tmux session on a covibe-owned socket
+# (<stateDir>/tmux/<owner>-<id>.sock) and opens the omp pane in it, with no
+# client attached — the same socket the browser terminal drives over control
+# mode. omp is not packaged, so a fake `omp` stands in: it emits a realistic
+# /collab banner when the session wrapper auto-types /collab, which is exactly
+# what the link sniffer consumes.
 # Auth runs in no-auth mode so the test needs no OIDC provider (the OIDC path is
 # covered by unit tests).
 # It also covers the remote path: a wrapper registering over REST with a
@@ -46,8 +46,6 @@ pkgs.testers.runNixOSTest {
         enable = true;
         user = "vibe";
         group = "users";
-        # mux is left unset on purpose: the default (tmux) is what the browser
-        # terminal needs, so the test covers it.
         webClient = "https://relay.test:7475";
         ompPackage = fakeOmp;
         dashboard = {
@@ -117,10 +115,9 @@ pkgs.testers.runNixOSTest {
     machine.succeed("test -d /home/vibe/covibe/vmproj")
 
     # The spool record names the covibe-owned tmux socket the session's server
-    # listens on (<stateDir>/tmux/<user>.sock, 0600) — the socket the browser
-    # terminal drives over tmux control mode.
+    # listens on (<stateDir>/tmux/<owner>-<id>.sock, 0600) — the socket the
+    # browser terminal drives over tmux control mode.
     rec = json.loads(machine.succeed(f"cat /run/covibe/{sid}.json"))
-    assert rec["mux"] == "tmux", rec
     sock = rec["muxSocket"]
     assert sock.startswith("/run/covibe/tmux/"), rec
     machine.wait_until_succeeds(f"test -S {sock}", timeout=30)
@@ -138,8 +135,8 @@ pkgs.testers.runNixOSTest {
     one = json.loads(machine.succeed(api(f"{API}/{sid}")))
     assert one["name"] == "vmproj", one
     assert one["status"] == "live", one
-    assert one["mux"] == "tmux", one
-    # A tmux-backed session exposes the browser terminal, writable for its owner.
+    # Sessions are tmux-backed, so they expose the browser terminal, writable
+    # for their owner.
     assert one["hasTerminal"], one
     assert one["canWrite"], one
     assert one["joinLink"] == "abcdefgh12.keykeykeykeykeykeykeyZZ", one

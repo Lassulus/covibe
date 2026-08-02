@@ -1,7 +1,6 @@
 package dashboard
 
 import (
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -153,14 +152,24 @@ func TestV1GetOne(t *testing.T) {
 	}
 }
 
-func TestV1PaneReadsSocket(t *testing.T) {
+// A remote wrapper cannot be captured from the dashboard's machine, so it pushes
+// its own snapshot with each heartbeat; that pushed text is what the pane view
+// serves, raw or with the escapes stripped.
+func TestV1PaneServesThePushedSnapshot(t *testing.T) {
 	keys, _ := LoadAPIKeys("k")
 	s, store := newTestServer(t, keys, false)
-
-	// Stand up a fake wrapper pane socket serving a snapshot with ANSI.
-	sock := store.PanePath("s1")
-	ln := listenPane(t, sock, "\x1b[1mhello\x1b[0m world")
-	defer ln.Close()
+	rec0, err := store.Load("s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec0.Remote = true
+	rec0.UpdatedAt = time.Now()
+	if err := store.Save(rec0); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.PaneFilePath("s1"), []byte("\x1b[1mhello\x1b[0m world"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	h := s.Handler()
 
@@ -181,25 +190,4 @@ func TestV1PaneReadsSocket(t *testing.T) {
 	if got := rec.Body.String(); got != "hello world" {
 		t.Fatalf("pane stripped: %q", got)
 	}
-}
-
-// listenPane serves a fixed snapshot on a unix socket, mimicking the session
-// wrapper's pane server.
-func listenPane(t *testing.T, sock, data string) net.Listener {
-	t.Helper()
-	ln, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			_, _ = c.Write([]byte(data))
-			_ = c.Close()
-		}
-	}()
-	return ln
 }

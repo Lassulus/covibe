@@ -131,7 +131,7 @@ document.getElementById('paneclose').onclick = ()=>{ document.getElementById('pa
 function esc(s){ return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 const STATUS_ORDER = {live:0, starting:1, ended:2};
-function origin(s){ return s.host ? '@'+s.host : (s.mux ? s.mux+(s.muxSession?' · '+s.muxSession:'') : ''); }
+function origin(s){ return s.host ? '@'+s.host : (s.muxSession || ''); }
 function age(ms){
   const d = Math.max(0, Math.floor((Date.now()-ms)/1000));
   if (d < 60) return d+'s';

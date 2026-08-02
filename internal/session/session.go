@@ -10,7 +10,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -38,7 +37,6 @@ type Config struct {
 	RelayHost  string // public host for guest links, e.g. "covibe.lassul.us"
 	WebClient  string // collab-web base for browser links, e.g. "https://my.omp.sh"
 	LocalRelay string // ws(s):// base the omp host connects to, e.g. "ws://127.0.0.1:8770"
-	Mux        string // "zellij" | "tmux"
 	MuxSession string
 	MuxSocket  string // tmux server socket the session runs on (recorded for the dashboard)
 	Token      string // per-user dashboard API key; empty disables the remote terminal
@@ -72,7 +70,6 @@ func Run(cfg Config) error {
 		ID:         cfg.ID,
 		Name:       cfg.Name,
 		Dir:        cfg.Dir,
-		Mux:        cfg.Mux,
 		MuxSession: cfg.MuxSession,
 		MuxSocket:  cfg.MuxSocket,
 		MuxTab:     cfg.Name,
@@ -208,18 +205,15 @@ type Sink interface {
 	End(rec *spool.Record)
 }
 
-// localSink is the default backend: an on-disk spool plus a per-session unix
-// socket the co-located dashboard reads pane snapshots from on demand.
+// localSink is the default backend: the on-disk spool. Pane snapshots need no
+// channel of their own — the dashboard captures the rendered grid straight from
+// the session's tmux server.
 type localSink struct{ store *spool.Store }
 
 func (s localSink) Register(rec *spool.Record) error { return s.store.Save(rec) }
 
-func (s localSink) Watch(rec *spool.Record, pane *paneBuffer) (<-chan struct{}, func()) {
-	closePane, err := servePane(s.store.PanePath(rec.ID), pane)
-	if err != nil {
-		return nil, func() {}
-	}
-	return nil, closePane
+func (s localSink) Watch(_ *spool.Record, _ *paneBuffer) (<-chan struct{}, func()) {
+	return nil, func() {}
 }
 
 func (s localSink) End(rec *spool.Record) {
@@ -250,33 +244,6 @@ func (p *paneBuffer) snapshot() []byte {
 	out := make([]byte, len(p.buf))
 	copy(out, p.buf)
 	return out
-}
-
-// servePane listens on a unix socket and writes the current pane snapshot to
-// each connection. Returns a closer that stops the listener and removes the
-// socket file.
-func servePane(sockPath string, pane *paneBuffer) (func(), error) {
-	_ = os.Remove(sockPath)
-	l, err := net.Listen("unix", sockPath)
-	if err != nil {
-		return nil, err
-	}
-	go func() {
-		for {
-			conn, err := l.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer conn.Close()
-				_, _ = conn.Write(pane.snapshot())
-			}()
-		}
-	}()
-	return func() {
-		_ = l.Close()
-		_ = os.Remove(sockPath)
-	}, nil
 }
 
 // watchResize mirrors our terminal size onto the pty and refreshes it on

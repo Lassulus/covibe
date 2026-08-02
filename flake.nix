@@ -1,5 +1,5 @@
 {
-  description = "covibe — co-vibing sessions for omp: launch omp in a mux, stream each session to a built-in OIDC-gated collab relay, and serve a QR dashboard + browser viewer";
+  description = "covibe — co-vibing sessions for omp: launch omp in tmux, stream each session to a built-in OIDC-gated collab relay, and serve a QR dashboard + browser viewer";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -51,7 +51,6 @@
               pkgs.go
               pkgs.gopls
               pkgs.go-tools
-              pkgs.zellij
               pkgs.tmux
             ];
           };

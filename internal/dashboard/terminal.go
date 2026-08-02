@@ -17,11 +17,11 @@ import (
 	"github.com/lassulus/covibe/internal/tmuxctl"
 )
 
-// A session is drivable when it runs in tmux on a socket covibe owns: the
-// wrapper records that socket, so a CLI-started session on the default server
-// (or a zellij session, or a remote one) simply has no terminal in the web UI.
+// A session is drivable when it runs on a tmux socket covibe owns: the wrapper
+// records that socket, so a session started without one (a bare `covibe
+// session` on someone's terminal) or a remote one has no terminal in the web UI.
 func terminalServer(r spool.Record) (tmuxctl.Server, bool) {
-	if r.Remote || r.Mux != "tmux" || r.MuxSocket == "" || r.MuxSession == "" {
+	if r.Remote || r.MuxSocket == "" || r.MuxSession == "" {
 		return tmuxctl.Server{}, false
 	}
 	return tmuxctl.Server{Socket: r.MuxSocket}, true

@@ -34,8 +34,7 @@ type Record struct {
 	ID         string    `json:"id"`
 	Name       string    `json:"name"`
 	Dir        string    `json:"dir"`
-	Mux        string    `json:"mux,omitempty"`        // "zellij" | "tmux"
-	MuxSession string    `json:"muxSession,omitempty"` // multiplexer session name
+	MuxSession string    `json:"muxSession,omitempty"` // tmux session name
 	MuxSocket  string    `json:"muxSocket,omitempty"`  // tmux server socket covibe drives (control mode, capture-pane)
 	MuxTab     string    `json:"muxTab,omitempty"`     // tab/window name
 	Model      string    `json:"model,omitempty"`      // omp --model selector
@@ -127,11 +126,6 @@ func (s *Store) Dir() string { return s.dir }
 
 func (s *Store) path(id string) string {
 	return filepath.Join(s.dir, id+".json")
-}
-
-// PanePath is the unix socket a session wrapper serves its terminal snapshot on.
-func (s *Store) PanePath(id string) string {
-	return filepath.Join(s.dir, id+".sock")
 }
 
 // PaneFilePath is the regular file a remote wrapper's pushed pane snapshot is
