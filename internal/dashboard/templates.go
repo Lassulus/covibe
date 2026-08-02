@@ -9,59 +9,52 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>covibe — sessions</title>
 <style nonce="{{.Nonce}}">
-  :root { color-scheme: dark light; --bg:#0e1116; --card:#171b22; --muted:#8b949e; --fg:#e6edf3; --accent:#4ea1ff; --live:#3fb950; --ended:#8b949e; --start:#d29922; }
-  * { box-sizing: border-box; }
+  :root { color-scheme: dark light; --bg:#0e1116; --card:#171b22; --muted:#8b949e; --fg:#e6edf3; --accent:#4ea1ff; --live:#3fb950; --ended:#8b949e; --start:#d29922; --line:#242a33; }
+  * { box-sizing: border-box; border-radius:0; }
   body { margin:0; font:15px/1.5 system-ui,sans-serif; background:var(--bg); color:var(--fg); }
-  header { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:1rem 1.5rem; border-bottom:1px solid #222; }
+  header { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:1rem 1.5rem; border-bottom:1px solid var(--line); }
   header h1 { font-size:1.1rem; margin:0; letter-spacing:.02em; }
   header .who { color:var(--muted); font-size:.85rem; }
   header a { color:var(--accent); text-decoration:none; }
   main { padding:1.5rem; }
-  .list { display:flex; flex-direction:column; gap:.35rem; }
-  /* The actions track is a fixed width, not auto: an auto track sizes to its
-     buttons, which differ per row (QR + open vs. "waiting for host…"), and that
-     changes how the fr tracks divide the rest — so nothing would line up. */
-  .row { background:var(--card); border:1px solid #222; border-radius:8px; padding:.55rem .75rem;
-         display:grid; gap:.5rem 1rem; align-items:center;
-         grid-template-columns:minmax(160px,1.4fr) minmax(160px,2fr) minmax(120px,1.2fr) 250px; }
-  .row.head { background:transparent; border-color:transparent; padding:.1rem .75rem; color:var(--muted);
-              font-size:.72rem; text-transform:uppercase; letter-spacing:.04em; }
-  .row .name { font-weight:600; display:flex; align-items:center; gap:.45rem; min-width:0; }
-  .row .name span.t { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  @media (max-width:860px) {
-    .row { grid-template-columns:1fr auto; }
-    .row.head { display:none; }
-    .row .dir, .row .who2 { grid-column:1 / -1; }
-  }
-  .dot { width:.6rem; height:.6rem; border-radius:50%; display:inline-block; }
+  table.sessions { width:100%; border-collapse:collapse; font-size:.85rem; }
+  table.sessions th, table.sessions td { text-align:left; padding:.4rem .6rem; border-bottom:1px solid var(--line); vertical-align:top; }
+  table.sessions thead th { color:var(--muted); font-size:.72rem; font-weight:600; text-transform:uppercase; letter-spacing:.04em;
+                            white-space:nowrap; user-select:none; border-bottom:1px solid #39404a; }
+  table.sessions thead th.sortable { cursor:pointer; }
+  table.sessions thead th.sortable:hover { color:var(--fg); }
+  table.sessions thead th .arrow { color:var(--accent); }
+  table.sessions tbody tr.session:hover { background:var(--card); }
+  table.sessions td.name { font-weight:600; white-space:nowrap; }
+  table.sessions td.meta { color:var(--muted); word-break:break-all; }
+  table.sessions td.num { white-space:nowrap; color:var(--muted); font-variant-numeric:tabular-nums; }
+  table.sessions td.actions { text-align:right; white-space:nowrap; }
+  .dot { width:.6rem; height:.6rem; border-radius:50%; display:inline-block; margin-right:.35rem; }
   .dot.live{background:var(--live)} .dot.starting{background:var(--start)} .dot.ended{background:var(--ended)}
-  .meta { color:var(--muted); font-size:.82rem; word-break:break-all; }
-  .badge { font-size:.7rem; padding:.1rem .45rem; border-radius:999px; border:1px solid #333; color:var(--muted); }
-  .qrpanel { grid-column:1 / -1; display:flex; gap:1rem; align-items:flex-start; flex-wrap:wrap;
-             border-top:1px solid #222; margin-top:.35rem; padding-top:.6rem; }
-  .qrpanel[hidden] { display:none; }
-  .qr { background:#fff; padding:8px; border-radius:8px; }
+  .status { white-space:nowrap; color:var(--muted); }
+  .badge { font-size:.7rem; padding:0 .3rem; border:1px solid #39404a; color:var(--muted); margin-left:.35rem; }
+  .qrpanel td { background:var(--card); }
+  .qrbox { display:flex; gap:1rem; align-items:flex-start; flex-wrap:wrap; }
+  .qr { background:#fff; padding:8px; }
   .qr img { display:block; width:200px; height:200px; image-rendering:pixelated; }
   .links { flex:1; min-width:240px; display:flex; flex-direction:column; gap:.4rem; }
   .link { display:flex; gap:.4rem; }
-  .link input { flex:1; background:#0b0e13; border:1px solid #2a2f37; color:var(--fg); border-radius:6px; padding:.4rem .5rem; font-family:ui-monospace,monospace; font-size:.78rem; }
-  button { background:#21262d; color:var(--fg); border:1px solid #30363d; border-radius:6px; padding:.4rem .6rem; cursor:pointer; font-size:.8rem; }
+  .link input { flex:1; background:#0b0e13; border:1px solid #2a2f37; color:var(--fg); padding:.3rem .45rem; font-family:ui-monospace,monospace; font-size:.78rem; }
+  button { background:#21262d; color:var(--fg); border:1px solid #30363d; padding:.25rem .55rem; cursor:pointer; font-size:.78rem; }
   button:hover { border-color:var(--accent); }
-  a.open { color:var(--accent); text-decoration:none; font-size:.85rem; }
+  a.open { color:var(--accent); text-decoration:none; font-size:.78rem; margin:0 .35rem; }
   .empty { color:var(--muted); text-align:center; padding:3rem; }
-  .waiting { color:var(--start); font-size:.82rem; }
+  .waiting { color:var(--start); font-size:.78rem; margin-right:.35rem; }
   .newform { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; margin-bottom:1.25rem; }
-  .newform input, .newform select { background:#0b0e13; border:1px solid #2a2f37; color:var(--fg); border-radius:6px; padding:.5rem .6rem; font-size:.85rem; }
+  .newform input, .newform select { background:#0b0e13; border:1px solid #2a2f37; color:var(--fg); padding:.4rem .55rem; font-size:.85rem; }
   .newform input#newname { min-width:220px; }
   .newform input#newdir { min-width:160px; }
   .newerr { color:#f85149; font-size:.8rem; }
-  .actions { display:flex; gap:.35rem; justify-content:flex-end; flex-wrap:wrap; }
-  .actions button, .actions a.open { font-size:.78rem; }
   .kill { border-color:#5a2a2a; }
   .modal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; padding:1.5rem; z-index:10; }
   .modal[hidden] { display:none; }
-  .modalbox { background:var(--card); border:1px solid #30363d; border-radius:10px; width:min(900px,100%); max-height:85vh; display:flex; flex-direction:column; }
-  .modalhead { display:flex; justify-content:space-between; align-items:center; padding:.7rem 1rem; border-bottom:1px solid #30363d; }
+  .modalbox { background:var(--card); border:1px solid #30363d; width:min(900px,100%); max-height:85vh; display:flex; flex-direction:column; }
+  .modalhead { display:flex; justify-content:space-between; align-items:center; padding:.6rem 1rem; border-bottom:1px solid #30363d; }
   .pane-out { margin:0; padding:1rem; overflow:auto; font-family:ui-monospace,monospace; font-size:.78rem; white-space:pre-wrap; word-break:break-word; }
 </style>
 </head>
@@ -95,8 +88,10 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
     <span id="newerr" class="newerr"></span>
   </form>
   {{end}}
-  <div class="row head"><div>session</div><div>directory</div><div>where · since</div><div class="actions">actions</div></div>
-  <div id="list" class="list"></div>
+  <table id="sessions" class="sessions" hidden>
+    <thead><tr id="head"></tr></thead>
+    <tbody id="list"></tbody>
+  </table>
   <div id="empty" class="empty" hidden>No live sessions.{{if not .CanCreate}} Start one with <code>covibe start &lt;name&gt;</code>.{{end}}</div>
 </main>
 <div id="panemodal" class="modal" hidden>
@@ -106,6 +101,8 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
   </div>
 </div>
 <script nonce="{{.Nonce}}">
+const table = document.getElementById('sessions');
+const head = document.getElementById('head');
 const list = document.getElementById('list');
 const empty = document.getElementById('empty');
 // Rows are rebuilt wholesale every refresh, so remember which QR panels are
@@ -115,44 +112,117 @@ document.getElementById('paneclose').onclick = ()=>{ document.getElementById('pa
 
 function esc(s){ return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
-function row(s){
-  const el = document.createElement('div');
-  el.className = 'row';
-  const started = new Date(s.startedAt).toLocaleTimeString();
-  const origin = s.host ? ('@'+esc(s.host)) : (s.mux ? esc(s.mux)+(s.muxSession?' · '+esc(s.muxSession):'') : '');
-  const model = s.model ? esc(s.model)+(s.thinking?' · '+esc(s.thinking):'') : (s.thinking?esc(s.thinking):'');
+const STATUS_ORDER = {live:0, starting:1, ended:2};
+function origin(s){ return s.host ? '@'+s.host : (s.mux ? s.mux+(s.muxSession?' · '+s.muxSession:'') : ''); }
+function age(ms){
+  const d = Math.max(0, Math.floor((Date.now()-ms)/1000));
+  if (d < 60) return d+'s';
+  if (d < 3600) return Math.floor(d/60)+'m';
+  if (d < 86400) return Math.floor(d/3600)+'h '+Math.floor(d%3600/60)+'m';
+  return Math.floor(d/86400)+'d '+Math.floor(d%86400/3600)+'h';
+}
+
+// Every column declares how it sorts, so the header is data — adding metadata
+// means adding one entry here, not another branch in the comparator.
+const COLS = [
+  {key:'status',   label:'status',    cls:'status', sort:s=>STATUS_ORDER[s.status] ?? 9,
+   cell:s=>'<span class="dot '+esc(s.status)+'"></span>'+esc(s.status)},
+  {key:'name',     label:'name',      cls:'name',   sort:s=>(s.name||s.id).toLowerCase(),
+   cell:s=>esc(s.name||s.id)+(s.viewOnly?'<span class="badge">view-only</span>':'')},
+  {key:'dir',      label:'directory', cls:'meta',   sort:s=>(s.dir||'').toLowerCase(), cell:s=>esc(s.dir||'')},
+  {key:'origin',   label:'where',     cls:'meta',   sort:s=>origin(s).toLowerCase(),   cell:s=>esc(origin(s))},
+  {key:'model',    label:'model',     cls:'meta',   sort:s=>(s.model||'').toLowerCase(), cell:s=>esc(s.model||'')},
+  {key:'thinking', label:'thinking',  cls:'meta',   sort:s=>(s.thinking||'').toLowerCase(), cell:s=>esc(s.thinking||'')},
+  // Age sorts on the raw timestamp: newest first means largest startedAt, so
+  // the ascending direction is "youngest" and the label stays honest.
+  {key:'age',      label:'age',       cls:'num',    sort:s=>-new Date(s.startedAt).getTime(),
+   cell:s=>esc(age(new Date(s.startedAt).getTime()))},
+];
+
+let sortKey = localStorage.getItem('sortKey') || 'age';
+let sortAsc = localStorage.getItem('sortAsc') !== '0';
+if (!COLS.some(c=>c.key===sortKey)) sortKey = 'age';
+
+function renderHead(){
+  head.replaceChildren();
+  COLS.forEach(c=>{
+    const th = document.createElement('th');
+    th.className = 'sortable';
+    th.textContent = c.label;
+    if (c.key === sortKey){
+      const a = document.createElement('span');
+      a.className = 'arrow';
+      a.textContent = sortAsc ? ' ▲' : ' ▼';
+      th.appendChild(a);
+    }
+    th.onclick = ()=>{
+      if (sortKey === c.key) sortAsc = !sortAsc; else { sortKey = c.key; sortAsc = true; }
+      localStorage.setItem('sortKey', sortKey);
+      localStorage.setItem('sortAsc', sortAsc ? '1' : '0');
+      renderHead();
+      render();
+    };
+    head.appendChild(th);
+  });
+  const th = document.createElement('th');
+  th.textContent = 'actions';
+  th.style.textAlign = 'right';
+  head.appendChild(th);
+}
+
+function sorted(sessions){
+  const col = COLS.find(c=>c.key===sortKey);
+  const dir = sortAsc ? 1 : -1;
+  return sessions.slice().sort((a,b)=>{
+    const x = col.sort(a), y = col.sort(b);
+    let d = 0;
+    if (typeof x === 'number' && typeof y === 'number') d = x - y;
+    else d = String(x).localeCompare(String(y));
+    // Name breaks ties so equal keys keep a stable, predictable order.
+    return d !== 0 ? d*dir : String(a.name||a.id).localeCompare(String(b.name||b.id));
+  });
+}
+
+function rowsFor(s){
+  const out = [];
+  const tr = document.createElement('tr');
+  tr.className = 'session';
   let body = '';
-  body += '<div class="name"><span class="dot '+esc(s.status)+'"></span><span class="t">'+esc(s.name||s.id)+'</span>'+
-          (s.viewOnly?' <span class="badge">view-only</span>':'')+'</div>';
-  body += '<div class="meta dir">'+esc(s.dir||'')+'</div>';
-  body += '<div class="meta who2">'+(origin?origin+' · ':'')+esc(started)+(model?'<br>'+model:'')+'</div>';
+  COLS.forEach(c=>{ body += '<td class="'+c.cls+'">'+c.cell(s)+'</td>'; });
   // The QR lives behind a per-row toggle: the overview stays scannable as text.
-  body += '<div class="actions">';
+  body += '<td class="actions">';
   if (s.browserUrl){
     body += '<button data-qr="'+esc(s.id)+'">QR</button>';
     body += '<a class="open" href="'+esc(s.browserUrl)+'" target="_blank" rel="noopener">open ↗</a>';
   } else {
     body += '<span class="waiting">waiting for host…</span>';
   }
-  body += '<button class="pane" data-pane="'+esc(s.id)+'">pane</button>'+
-          '<button class="kill" data-kill="'+esc(s.id)+'">kill</button></div>';
+  body += '<button class="pane" data-pane="'+esc(s.id)+'">pane</button> '+
+          '<button class="kill" data-kill="'+esc(s.id)+'">kill</button></td>';
+  tr.innerHTML = body;
+  out.push(tr);
+
+  let panel = null;
   if (s.browserUrl){
-    body += '<div class="qrpanel" hidden><div class="qr"><img alt="join QR"></div><div class="links">'+
+    panel = document.createElement('tr');
+    panel.className = 'qrpanel';
+    panel.hidden = true;
+    let p = '<td colspan="'+(COLS.length+1)+'"><div class="qrbox"><div class="qr"><img alt="join QR"></div><div class="links">'+
             '<div class="link"><input readonly value="'+esc(s.browserUrl)+'">'+
             '<button data-copy="'+esc(s.browserUrl)+'">copy</button></div>';
     if (s.joinLink){
-      body += '<div class="link"><input readonly value="omp join &quot;'+esc(s.joinLink)+'&quot;">'+
-              '<button data-copy="omp join &quot;'+esc(s.joinLink)+'&quot;">copy</button></div>';
+      p += '<div class="link"><input readonly value="omp join &quot;'+esc(s.joinLink)+'&quot;">'+
+           '<button data-copy="omp join &quot;'+esc(s.joinLink)+'&quot;">copy</button></div>';
     }
-    body += '</div></div>';
+    panel.innerHTML = p + '</div></div></td>';
+    panel.querySelectorAll('button[data-copy]').forEach(b=>{
+      b.onclick = ()=>{ navigator.clipboard.writeText(b.dataset.copy); b.textContent='copied'; setTimeout(()=>b.textContent='copy',1200); };
+    });
+    out.push(panel);
   }
-  el.innerHTML = body;
-  el.querySelectorAll('button[data-copy]').forEach(b=>{
-    b.onclick = ()=>{ navigator.clipboard.writeText(b.dataset.copy); b.textContent='copied'; setTimeout(()=>b.textContent='copy',1200); };
-  });
-  const qrBtn = el.querySelector('button[data-qr]');
-  if (qrBtn){
-    const panel = el.querySelector('.qrpanel');
+
+  const qrBtn = tr.querySelector('button[data-qr]');
+  if (qrBtn && panel){
     const img = panel.querySelector('img');
     const show = (on)=>{
       // Rendered on demand from /qr, so the listing carries no QR payload.
@@ -164,8 +234,8 @@ function row(s){
     qrBtn.onclick = ()=> show(panel.hidden);
     if (qrOpen.has(s.id)) show(true);
   }
-  el.querySelector('button[data-pane]').onclick = ()=>showPane(s.id, s.name||s.id);
-  el.querySelector('button[data-kill]').onclick = async (ev)=>{
+  tr.querySelector('button[data-pane]').onclick = ()=>showPane(s.id, s.name||s.id);
+  tr.querySelector('button[data-kill]').onclick = async (ev)=>{
     if (!confirm('Kill session '+(s.name||s.id)+'?')) return;
     const btn = ev.currentTarget;
     btn.disabled = true;
@@ -177,7 +247,16 @@ function row(s){
     } catch(e){ btn.textContent = 'kill failed'; }
     setTimeout(refresh, 300);
   };
-  return el;
+  return out;
+}
+
+let current = [];
+function render(){
+  const rows = [];
+  sorted(current).forEach(s=>rows.push(...rowsFor(s)));
+  list.replaceChildren(...rows);
+  empty.hidden = current.length > 0;
+  table.hidden = current.length === 0;
 }
 
 async function showPane(id, name){
@@ -196,9 +275,8 @@ async function refresh(){
   try {
     const res = await fetch('/api/v1/sessions', {headers:{'Accept':'application/json'}});
     if (res.status === 401){ location.href='/auth/login'; return; }
-    const sessions = await res.json();
-    list.replaceChildren(...sessions.map(row));
-    empty.hidden = sessions.length > 0;
+    current = await res.json() || [];
+    render();
   } catch(e){ /* transient; next tick retries */ }
 }
 
@@ -264,6 +342,7 @@ if (form){
     finally { btn.disabled = false; }
   });
 }
+renderHead();
 refresh();
 setInterval(refresh, 4000);
 </script>
