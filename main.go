@@ -101,6 +101,7 @@ func cmdSession(args []string) error {
 	localRelay := fs.String("local-relay", env("COVIBE_LOCAL_RELAY", ""), "ws(s):// relay base the omp host connects to")
 	muxName := fs.String("mux", env("COVIBE_MUX", ""), "multiplexer label (zellij|tmux)")
 	muxSession := fs.String("mux-session", env("COVIBE_MUX_SESSION", ""), "multiplexer session name")
+	muxSocket := fs.String("mux-socket", env("COVIBE_MUX_SOCKET", ""), "tmux server socket this session runs on (recorded for the dashboard terminal)")
 	stateDir := fs.String("state-dir", "", "spool directory")
 	model := fs.String("model", env("COVIBE_MODEL", ""), "omp model selector (optional)")
 	thinking := fs.String("thinking", env("COVIBE_THINKING", ""), "omp thinking level (optional)")
@@ -132,6 +133,7 @@ func cmdSession(args []string) error {
 		LocalRelay: *localRelay,
 		Mux:        *muxName,
 		MuxSession: *muxSession,
+		MuxSocket:  *muxSocket,
 	}
 	if *dashboardURL != "" {
 		cfg.Sink = session.NewRemoteSink(*dashboardURL)
@@ -150,8 +152,9 @@ func cmdStart(args []string) error {
 	fs := flag.NewFlagSet("start", flag.ExitOnError)
 	name := fs.String("name", "", "session name (also positional)")
 	dir := fs.String("dir", "", "working directory (default: cwd)")
-	muxName := fs.String("mux", env("COVIBE_MUX", "zellij"), "multiplexer: zellij|tmux")
+	muxName := fs.String("mux", env("COVIBE_MUX", "tmux"), "multiplexer: zellij|tmux")
 	muxSession := fs.String("session", env("COVIBE_MUX_SESSION", "covibe"), "multiplexer session name")
+	muxSocket := fs.String("mux-socket", env("COVIBE_MUX_SOCKET", ""), "tmux server socket (default <state-dir>/tmux/local.sock)")
 	relayHost := fs.String("relay-host", env("COVIBE_RELAY_HOST", ""), "public host for guest links")
 	webClient := fs.String("web-client", env("COVIBE_WEB_CLIENT", "https://my.omp.sh"), "collab-web client base")
 	localRelay := fs.String("local-relay", env("COVIBE_LOCAL_RELAY", ""), "ws(s):// relay base the omp host connects to")
@@ -189,6 +192,7 @@ func cmdStart(args []string) error {
 		Dir:        *dir,
 		Mux:        *muxName,
 		MuxSession: *muxSession,
+		MuxSocket:  *muxSocket,
 		RelayHost:  *relayHost,
 		WebClient:  *webClient,
 		LocalRelay: *localRelay,
@@ -196,6 +200,17 @@ func cmdStart(args []string) error {
 		StateDir:   *stateDir,
 		Model:      *model,
 		Thinking:   *thinking,
+	}
+	// A CLI-started session belongs to the host operator, so it goes on the
+	// "local" socket: one tmux server, reachable by the dashboard's terminal.
+	if opts.MuxSocket == "" && *muxName == "tmux" {
+		store, err := spool.Open(*stateDir)
+		if err != nil {
+			return err
+		}
+		if opts.MuxSocket, err = store.TmuxSocket(""); err != nil {
+			return err
+		}
 	}
 	if *dryRun {
 		argv, err := launch.Command(opts)
@@ -265,7 +280,7 @@ func cmdServe(args []string) error {
 	admins := fs.String("admins", env("COVIBE_ADMINS", ""), "comma-separated admin users (email, sub or preferred_username) with full access")
 	accessFile := fs.String("access-file", env("COVIBE_ACCESS_FILE", ""), "JSON file holding the user directory and per-session member lists (default <state-dir>/access.json)")
 	workspace := fs.String("workspace", env("COVIBE_WORKSPACE", ""), "workspace root enabling web session creation (sessions clamped inside it)")
-	muxName := fs.String("mux", env("COVIBE_MUX", "zellij"), "multiplexer for created sessions: zellij|tmux")
+	muxName := fs.String("mux", env("COVIBE_MUX", "tmux"), "multiplexer for created sessions: zellij|tmux (the browser terminal needs tmux)")
 	muxSession := fs.String("mux-session", env("COVIBE_MUX_SESSION", "covibe"), "multiplexer session name for created sessions")
 	ompBin := fs.String("omp", env("COVIBE_OMP", "omp"), "omp binary for created sessions")
 	apiKeys := fs.String("api-keys", env("COVIBE_API_KEYS", ""), "comma/space-separated API keys for the /api/v1 REST surface")
@@ -330,6 +345,16 @@ func cmdServe(args []string) error {
 	}
 	if *workspace != "" {
 		cfg.Create = func(sp dashboard.CreateSpec) error {
+			// One tmux server per covibe user: the socket is both the isolation
+			// boundary between users and the handle the dashboard drives to
+			// stream the terminal.
+			var socket string
+			if *muxName == "tmux" {
+				var err error
+				if socket, err = store.TmuxSocket(sp.Owner); err != nil {
+					return err
+				}
+			}
 			_, err := launch.Launch(launch.Options{
 				ID:         sp.ID,
 				Name:       sp.Name,
@@ -338,6 +363,7 @@ func cmdServe(args []string) error {
 				Thinking:   sp.Thinking,
 				Mux:        *muxName,
 				MuxSession: *muxSession,
+				MuxSocket:  socket,
 				RelayHost:  *relayHost,
 				WebClient:  *webClient,
 				LocalRelay: *localRelay,

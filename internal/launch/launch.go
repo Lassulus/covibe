@@ -20,6 +20,7 @@ type Options struct {
 	Dir        string
 	Mux        string // "zellij" | "tmux"
 	MuxSession string
+	MuxSocket  string // tmux server socket (per covibe user); empty uses the default server
 	RelayHost  string // public host for guest links, e.g. "covibe.lassul.us"
 	WebClient  string // collab-web base for browser links, e.g. "https://my.omp.sh"
 	LocalRelay string // ws(s):// base the omp host connects to
@@ -50,6 +51,11 @@ func (o Options) inner(id, sess string) ([]string, error) {
 		"--omp", omp,
 		"--mux", o.Mux,
 		"--mux-session", sess,
+	}
+	// The wrapper records the socket in the spool so the dashboard knows which
+	// tmux server to drive for this session.
+	if o.MuxSocket != "" {
+		argv = append(argv, "--mux-socket", o.MuxSocket)
 	}
 	if o.RelayHost != "" {
 		argv = append(argv, "--relay-host", o.RelayHost)
@@ -83,7 +89,7 @@ func (o Options) spec() (mux.Launcher, mux.Spec, string, error) {
 	if err != nil {
 		return nil, mux.Spec{}, "", err
 	}
-	return l, mux.Spec{Name: o.Name, Dir: o.Dir, Session: sess, InnerArgv: inner}, sess, nil
+	return l, mux.Spec{Name: o.Name, Dir: o.Dir, Session: sess, Socket: o.MuxSocket, InnerArgv: inner}, sess, nil
 }
 
 // resolveSession fills a stable id (generating one when empty) and the derived

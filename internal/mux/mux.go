@@ -12,10 +12,14 @@ import (
 
 // Spec describes a session to launch.
 type Spec struct {
-	ID        string
-	Name      string   // tab/window name
-	Dir       string   // working directory
-	Session   string   // multiplexer session name
+	ID      string
+	Name    string // tab/window name
+	Dir     string // working directory
+	Session string // multiplexer session name
+	// Socket is the tmux server socket to launch on (tmux only). Each covibe
+	// user gets their own socket, which is both the isolation boundary between
+	// users and the handle the dashboard drives with control mode.
+	Socket    string
 	InnerArgv []string // the full `covibe session ...` argv to run in the pane
 }
 
@@ -30,8 +34,8 @@ type Launcher interface {
 	// Launch runs the multiplexer command.
 	Launch(Spec) error
 	// Kill tears down the multiplexer session (best-effort cleanup after the
-	// session's process has been signalled).
-	Kill(session string) error
+	// session's process has been signalled). Only Socket and Session are read.
+	Kill(Spec) error
 }
 
 // For returns the launcher for a backend name.
@@ -113,10 +117,11 @@ func shortID(id string) string {
 	return strings.Trim(s, "-_")
 }
 
-// Kill tears down a backend's session by name (best-effort).
-func Kill(backend, session string) {
+// Kill tears down a backend's session by name (best-effort). socket is the tmux
+// server socket and is ignored by backends that do not have one.
+func Kill(backend, socket, session string) {
 	if l, err := For(backend); err == nil {
-		_ = l.Kill(session)
+		_ = l.Kill(Spec{Socket: socket, Session: session})
 	}
 }
 
@@ -203,12 +208,12 @@ func zellijState(name string) sessionState {
 }
 
 // Kill terminates the session and clears its resurrectable corpse.
-func (zellij) Kill(session string) error {
-	if session == "" {
+func (zellij) Kill(s Spec) error {
+	if s.Session == "" {
 		return nil
 	}
-	_ = run([]string{"zellij", "kill-session", session})
-	_ = run([]string{"zellij", "delete-session", session, "--force"})
+	_ = run([]string{"zellij", "kill-session", s.Session})
+	_ = run([]string{"zellij", "delete-session", s.Session, "--force"})
 	return nil
 }
 
@@ -230,12 +235,13 @@ func (tmux) Ensure(_ string) error { return nil }
 
 // Command creates a fresh detached tmux session running the pane command
 // directly (no shell, so no quoting games). Each covibe session gets its own
-// tmux session.
+// tmux session, on the socket of the covibe user that owns it: a socket is one
+// tmux server, so it is also the isolation boundary between users.
 func (tmux) Command(s Spec) ([]string, error) {
 	if s.Session == "" {
 		return nil, fmt.Errorf("tmux: session name required")
 	}
-	argv := []string{"tmux", "new-session", "-d", "-s", s.Session, "-n", s.Name}
+	argv := append(tmuxArgv(s.Socket), "new-session", "-d", "-s", s.Session, "-n", s.Name)
 	if s.Dir != "" {
 		argv = append(argv, "-c", s.Dir)
 	}
@@ -243,13 +249,24 @@ func (tmux) Command(s Spec) ([]string, error) {
 	return append(argv, s.InnerArgv...), nil
 }
 
+// tmuxArgv is the tmux invocation prefix, pinned to a socket when one is set.
+// An empty socket means the user's default server, which is what a bare
+// `covibe start` on a developer machine wants.
+func tmuxArgv(socket string) []string {
+	if socket == "" {
+		return []string{"tmux"}
+	}
+	return []string{"tmux", "-S", socket}
+}
+
 // Kill terminates the tmux session.
-func (tmux) Kill(session string) error {
-	if session == "" {
+func (tmux) Kill(s Spec) error {
+	if s.Session == "" {
 		return nil
 	}
-	// #nosec G204 -- fixed argv; session name only, no shell
-	_ = exec.Command("tmux", "kill-session", "-t", "="+session).Run()
+	argv := append(tmuxArgv(s.Socket), "kill-session", "-t", "="+s.Session)
+	// #nosec G204 -- fixed argv; operator socket path and session name, no shell
+	_ = exec.Command(argv[0], argv[1:]...).Run()
 	return nil
 }
 

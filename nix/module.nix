@@ -71,7 +71,16 @@ let
     // d.extraSettings;
 
   muxPackage = if cfg.mux == "tmux" then pkgs.tmux else pkgs.zellij;
-  dashboardPath = [ muxPackage ] ++ lib.optional (cfg.ompPackage != null) cfg.ompPackage;
+  # tmux is on the dashboard PATH even for zellij deployments: the browser
+  # terminal drives tmux control mode and capture-pane regardless of the mux
+  # sessions are launched in.
+  dashboardPath = lib.unique (
+    [
+      muxPackage
+      pkgs.tmux
+    ]
+    ++ lib.optional (cfg.ompPackage != null) cfg.ompPackage
+  );
 in
 {
   options.services.covibe = {
@@ -148,8 +157,13 @@ in
         "zellij"
         "tmux"
       ];
-      default = "zellij";
-      description = "Terminal multiplexer covibe launches sessions in.";
+      default = "tmux";
+      description = ''
+        Terminal multiplexer covibe launches sessions in. The browser terminal
+        (the dashboard's `term` button and /api/v1/sessions/<id>/terminal)
+        requires tmux: covibe drives it over tmux control mode. zellij sessions
+        still work, but expose no interactive terminal in the web UI.
+      '';
     };
 
     muxSession = lib.mkOption {
@@ -214,7 +228,7 @@ in
     extraPackages = lib.mkOption {
       type = lib.types.listOf lib.types.package;
       default = [ (if cfg.mux == "tmux" then pkgs.tmux else pkgs.zellij) ];
-      defaultText = lib.literalExpression "[ pkgs.zellij ]";
+      defaultText = lib.literalExpression "[ pkgs.tmux ]";
       description = "Extra packages (the multiplexer, etc.) to install alongside covibe.";
     };
 
@@ -406,6 +420,9 @@ in
         "d ${cfg.stateDir} 0700 ${cfg.user} ${cfg.group} -"
         "d ${cfg.socketDir} 0700 ${cfg.user} ${cfg.group} -"
         "d ${cfg.socketDir}/zellij 0700 ${cfg.user} ${cfg.group} -"
+        # covibe's own tmux sockets (<stateDir>/tmux/<key>.sock, one per covibe
+        # user); pre-created so a fresh boot has it before the first session.
+        "d ${cfg.stateDir}/tmux 0700 ${cfg.user} ${cfg.group} -"
       ]
       ++ lib.optional (d.workspaceRoot != "") "d ${d.workspaceRoot} 0700 ${cfg.user} ${cfg.group} -"
       ++ lib.optional (d.accessFile != "") "d ${accessDir} 0700 ${cfg.user} ${cfg.group} -"

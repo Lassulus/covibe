@@ -39,6 +39,7 @@ type Config struct {
 	LocalRelay string // ws(s):// base the omp host connects to, e.g. "ws://127.0.0.1:8770"
 	Mux        string // "zellij" | "tmux"
 	MuxSession string
+	MuxSocket  string // tmux server socket the session runs on (recorded for the dashboard)
 	Store      *spool.Store
 	Sink       Sink // lifecycle backend; nil uses the local on-disk spool (cfg.Store)
 }
@@ -71,6 +72,7 @@ func Run(cfg Config) error {
 		Dir:        cfg.Dir,
 		Mux:        cfg.Mux,
 		MuxSession: cfg.MuxSession,
+		MuxSocket:  cfg.MuxSocket,
 		MuxTab:     cfg.Name,
 		Model:      cfg.Model,
 		Thinking:   cfg.Thinking,

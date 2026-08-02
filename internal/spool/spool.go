@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -35,6 +36,7 @@ type Record struct {
 	Dir        string    `json:"dir"`
 	Mux        string    `json:"mux,omitempty"`        // "zellij" | "tmux"
 	MuxSession string    `json:"muxSession,omitempty"` // multiplexer session name
+	MuxSocket  string    `json:"muxSocket,omitempty"`  // tmux server socket covibe drives (control mode, capture-pane)
 	MuxTab     string    `json:"muxTab,omitempty"`     // tab/window name
 	Model      string    `json:"model,omitempty"`      // omp --model selector
 	Thinking   string    `json:"thinking,omitempty"`   // omp --thinking level
@@ -136,6 +138,50 @@ func (s *Store) PanePath(id string) string {
 // stored at (remote sessions cannot serve the unix socket of PanePath).
 func (s *Store) PaneFilePath(id string) string {
 	return filepath.Join(s.dir, id+".pane")
+}
+
+// TmuxDir is the directory holding one tmux server socket per covibe user.
+func (s *Store) TmuxDir() string { return filepath.Join(s.dir, "tmux") }
+
+// TmuxSocket is the socket of the tmux server that runs a user's sessions.
+// One socket is one tmux server, so this is also the boundary between users:
+// a session on alice's socket is invisible to a tmux client on bob's. The
+// directory is created 0700 on demand, and the socket itself is created 0600 by
+// tmux (non-default sockets get no group/other bits).
+func (s *Store) TmuxSocket(user string) (string, error) {
+	dir := s.TmuxDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create tmux socket dir: %w", err)
+	}
+	return filepath.Join(dir, sanitizeUser(user)+".sock"), nil
+}
+
+// sanitizeUser turns a covibe user key (an email, a sub, a username) into one
+// safe path component. Unowned sessions — started from the CLI on the host —
+// share the "local" socket, which is the host operator's own server.
+func sanitizeUser(user string) string {
+	user = strings.TrimSpace(strings.ToLower(user))
+	if user == "" {
+		return "local"
+	}
+	var b strings.Builder
+	for _, r := range user {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	// sun_path is ~108 bytes; keep the component well clear of it.
+	out := strings.Trim(b.String(), "-")
+	if len(out) > 48 {
+		out = out[:48]
+	}
+	if out == "" {
+		return "local"
+	}
+	return out
 }
 
 // Save atomically writes a record, stamping UpdatedAt.

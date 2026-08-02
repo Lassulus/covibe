@@ -8,6 +8,7 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>covibe — sessions</title>
+<link rel="stylesheet" href="/assets/xterm.css">
 <style nonce="{{.Nonce}}">
   :root { color-scheme: dark light; --bg:#0e1116; --card:#171b22; --muted:#8b949e; --fg:#e6edf3; --accent:#4ea1ff; --live:#3fb950; --ended:#8b949e; --start:#d29922; --line:#242a33; }
   * { box-sizing: border-box; border-radius:0; }
@@ -66,6 +67,11 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
   .modalbox { background:var(--card); border:1px solid #30363d; width:min(900px,100%); max-height:85vh; display:flex; flex-direction:column; }
   .modalhead { display:flex; justify-content:space-between; align-items:center; padding:.6rem 1rem; border-bottom:1px solid #30363d; }
   .pane-out { margin:0; padding:1rem; overflow:auto; font-family:ui-monospace,monospace; font-size:.78rem; white-space:pre-wrap; word-break:break-word; }
+  .termbox { width:min(1100px,100%); }
+  .modalhead .term-ro { color:var(--muted); font-size:.7rem; font-weight:400; text-transform:uppercase; letter-spacing:.04em; margin-left:.5rem; }
+  .term-body { display:flex; flex-direction:column; min-height:60vh; padding:.4rem; overflow:hidden; background:#0b0e13; border:1px solid var(--line); }
+  .covibe-term-screen { flex:1; min-height:0; }
+  .covibe-term-note { color:var(--muted); font-size:.7rem; text-transform:uppercase; letter-spacing:.04em; padding-top:.35rem; }
 </style>
 </head>
 <body>
@@ -112,6 +118,18 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
     <pre id="panepre" class="pane-out"></pre>
   </div>
 </div>
+<div id="termmodal" class="modal" hidden>
+  <div class="modalbox termbox">
+    <div class="modalhead">
+      <div><strong id="termtitle"></strong><span id="termro" class="term-ro" hidden>read-only</span></div>
+      <button id="termclose">close</button>
+    </div>
+    <div id="termbody" class="term-body"></div>
+  </div>
+</div>
+<script src="/assets/xterm.js"></script>
+<script src="/assets/addon-fit.js"></script>
+<script src="/assets/terminal.js"></script>
 <script nonce="{{.Nonce}}">
 const table = document.getElementById('sessions');
 const head = document.getElementById('head');
@@ -218,6 +236,8 @@ function rowsFor(s){
     body += '<span class="waiting">waiting for host…</span>';
   }
   if (s.canManage) body += '<button class="share" data-share="'+esc(s.id)+'">share</button> ';
+  // A terminal only exists for sessions on a covibe-owned tmux socket.
+  if (s.hasTerminal) body += '<button class="term" data-term="'+esc(s.id)+'">term</button> ';
   body += '<button class="pane" data-pane="'+esc(s.id)+'">pane</button>';
   // Kill answers 403 without manage rights, so don't offer a button that only fails.
   if (s.canManage) body += ' <button class="kill" data-kill="'+esc(s.id)+'">kill</button>';
@@ -325,6 +345,8 @@ function rowsFor(s){
     if (qrOpen.has(s.id)) show(true);
   }
   tr.querySelector('button[data-pane]').onclick = ()=>showPane(s.id, s.name||s.id);
+  const termBtn = tr.querySelector('button[data-term]');
+  if (termBtn) termBtn.onclick = ()=>showTerm(s.id, s.name||s.id, !!s.canWrite);
   const killBtn = tr.querySelector('button[data-kill]');
   if (killBtn) killBtn.onclick = async (ev)=>{
     if (!confirm('Kill session '+(s.name||s.id)+'?')) return;
@@ -371,6 +393,43 @@ async function showPane(id, name){
     pre.textContent = res.ok ? (await res.text()) : ('pane unavailable ('+res.status+')');
   } catch(e){ pre.textContent = String(e); }
 }
+
+// The live terminal hangs off the modal, not off a row: rows are rebuilt every
+// 4s, and re-attaching a WebSocket that often would reset the screen. One
+// terminal at a time — opening another closes the first.
+const termModal = document.getElementById('termmodal');
+const termBody = document.getElementById('termbody');
+let termOpen = null;
+let escArmed = 0;
+
+function closeTerm(){
+  if (termOpen){ termOpen.close(); termOpen = null; }
+  termBody.replaceChildren();
+  termModal.hidden = true;
+}
+
+function showTerm(id, name, canWrite){
+  closeTerm();
+  document.getElementById('termtitle').textContent = name;
+  document.getElementById('termro').hidden = canWrite;
+  termModal.hidden = false;
+  termOpen = covibeTerminal(termBody, id, {write: canWrite});
+  termOpen.focus();
+}
+
+document.getElementById('termclose').onclick = closeTerm;
+termModal.onclick = (ev)=>{ if (ev.target === termModal) closeTerm(); };
+// Capture phase: xterm stops keydown propagation on its textarea, so a
+// bubbling listener never sees Escape while the grid has focus.
+document.addEventListener('keydown', (ev)=>{
+  if (ev.key !== 'Escape' || termModal.hidden) return;
+  // Escape belongs to the program when the grid has focus (vim would be
+  // unusable otherwise), so closing from there takes a second press.
+  const inTerm = termBody.contains(ev.target);
+  const now = Date.now();
+  if (inTerm && now - escArmed > 600){ escArmed = now; return; }
+  closeTerm();
+}, true);
 
 async function refresh(){
   try {

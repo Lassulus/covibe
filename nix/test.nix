@@ -2,11 +2,12 @@
 # to prove the full path — service up, web-initiated session creation, mux
 # launch, and /collab-link capture — works end to end.
 #
-# It exercises the default multiplexer (zellij): the dashboard creates a
-# backgrounded zellij session (`attach --create-background`) and opens the omp
-# pane in it (`zellij run`), with no client attached. omp is not packaged, so a
-# fake `omp` stands in: it emits a realistic /collab banner when the session
-# wrapper auto-types /collab, which is exactly what the link sniffer consumes.
+# It exercises the default multiplexer (tmux): the dashboard creates a detached
+# tmux session on a covibe-owned socket (<stateDir>/tmux/<user>.sock) and opens
+# the omp pane in it, with no client attached — the same socket the browser
+# terminal drives over control mode. omp is not packaged, so a fake `omp` stands
+# in: it emits a realistic /collab banner when the session wrapper auto-types
+# /collab, which is exactly what the link sniffer consumes.
 # Auth runs in no-auth mode so the test needs no OIDC provider (the OIDC path is
 # covered by unit tests).
 { pkgs, self }:
@@ -24,7 +25,6 @@ let
       esac
     done
   '';
-  sock = "/run/covibe/zellij";
 in
 pkgs.testers.runNixOSTest {
   name = "covibe";
@@ -43,8 +43,9 @@ pkgs.testers.runNixOSTest {
         enable = true;
         user = "vibe";
         group = "users";
-        # mux defaults to zellij — left unset on purpose to test the default.
-        relay = "wss://relay.test:7475";
+        # mux is left unset on purpose: the default (tmux) is what the browser
+        # terminal needs, so the test covers it.
+        webClient = "https://relay.test:7475";
         ompPackage = fakeOmp;
         dashboard = {
           addr = "127.0.0.1:8770";
@@ -66,8 +67,8 @@ pkgs.testers.runNixOSTest {
     KEY = "test-key"
     API = "http://127.0.0.1:8770/api/v1/sessions"
 
-    def zellij(cmd):
-        return f"su vibe -c 'ZELLIJ_SOCKET_DIR=${sock} zellij {cmd}'"
+    def tmux(sock, cmd):
+        return f"su vibe -c 'tmux -S {sock} {cmd}'"
 
     def api(args):
         return f"curl -sf -H 'Authorization: Bearer {KEY}' {args}"
@@ -109,8 +110,19 @@ pkgs.testers.runNixOSTest {
     # The workspace dir was created, clamped inside the workspace root.
     machine.succeed("test -d /home/vibe/covibe/vmproj")
 
-    # A backgrounded zellij session hosts the pane.
-    machine.wait_until_succeeds(zellij("list-sessions -ns") + " | grep -q '^covibe$'", timeout=30)
+    # The spool record names the covibe-owned tmux socket the session's server
+    # listens on (<stateDir>/tmux/<user>.sock, 0600) — the socket the browser
+    # terminal drives over tmux control mode.
+    rec = json.loads(machine.succeed(f"cat /run/covibe/{sid}.json"))
+    assert rec["mux"] == "tmux", rec
+    sock = rec["muxSocket"]
+    assert sock.startswith("/run/covibe/tmux/"), rec
+    machine.wait_until_succeeds(f"test -S {sock}", timeout=30)
+
+    # A backgrounded tmux session on that socket hosts the pane.
+    machine.wait_until_succeeds(tmux(sock, "list-sessions") + " | grep -q '^covibe:'", timeout=30)
+    sessions = machine.succeed(tmux(sock, "list-sessions"))
+    assert "covibe:" in sessions, sessions
 
     # GET /sessions/<id> exposes the omp remote key once /collab is captured.
     machine.wait_until_succeeds(
@@ -120,7 +132,10 @@ pkgs.testers.runNixOSTest {
     one = json.loads(machine.succeed(api(f"{API}/{sid}")))
     assert one["name"] == "vmproj", one
     assert one["status"] == "live", one
-    assert one["mux"] == "zellij", one
+    assert one["mux"] == "tmux", one
+    # A tmux-backed session exposes the browser terminal, writable for its owner.
+    assert one["hasTerminal"], one
+    assert one["canWrite"], one
     assert one["joinLink"] == "abcdefgh12.keykeykeykeykeykeykeyZZ", one
     assert one["browserUrl"] == "https://relay.test:7475/#abcdefgh12.keykeykeykeykeykeykeyZZ", one
     assert one["qr"].startswith("data:image/png;base64,"), one
@@ -138,8 +153,8 @@ pkgs.testers.runNixOSTest {
     # The covibe CLI sees the same live session from the shared spool.
     machine.succeed("su vibe -c 'COVIBE_STATE_DIR=/run/covibe covibe list' | grep -q vmproj")
 
-    # Killing the zellij session ends the pane; the dashboard prunes it.
-    machine.succeed(zellij("kill-session covibe"))
+    # Killing the tmux session ends the pane; the dashboard prunes it.
+    machine.succeed(tmux(sock, "kill-session -t covibe"))
     machine.wait_until_succeeds(api(API) + " | grep -q '^\[\]'", timeout=30)
   '';
 }

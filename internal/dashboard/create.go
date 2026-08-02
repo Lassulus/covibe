@@ -75,6 +75,10 @@ type CreateSpec struct {
 	Dir      string
 	Model    string // omp --model (optional; may carry :thinking suffix)
 	Thinking string // omp --thinking level (optional)
+	// Owner is the covibe user the session belongs to. It selects the tmux
+	// server (one socket per user) the session is launched on, so one user's
+	// sessions are invisible to another user's tmux client.
+	Owner string
 }
 
 // safeModel constrains a model selector to characters omp uses in provider/
@@ -146,7 +150,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if owner != "" {
 		_ = s.cfg.Access.SetOwner(id, owner)
 	}
-	if err := s.cfg.Create(CreateSpec{ID: id, Name: req.Name, Dir: dir, Model: model, Thinking: thinking}); err != nil {
+	if err := s.cfg.Create(CreateSpec{ID: id, Name: req.Name, Dir: dir, Model: model, Thinking: thinking, Owner: owner}); err != nil {
 		if owner != "" {
 			_ = s.cfg.Access.Drop(id)
 		}

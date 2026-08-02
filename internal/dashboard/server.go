@@ -12,6 +12,7 @@ import (
 	"github.com/lassulus/covibe/internal/access"
 	"github.com/lassulus/covibe/internal/mux"
 	"github.com/lassulus/covibe/internal/spool"
+	"github.com/lassulus/covibe/internal/tmuxctl"
 )
 
 // Config configures the dashboard server.
@@ -93,6 +94,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/sessions", s.requireAPI(s.handleCreate))
 	mux.HandleFunc("GET /api/v1/sessions/{id}", s.requireAPI(s.handleGetOne))
 	mux.HandleFunc("GET /api/v1/sessions/{id}/pane", s.requireAPI(s.handlePane))
+	mux.HandleFunc("GET /api/v1/sessions/{id}/screen", s.requireAPI(s.handleScreen))
+	mux.HandleFunc("POST /api/v1/sessions/{id}/input", s.requireAPI(s.handleInput))
+	// The terminal stream is a browser endpoint but lives on the API surface so
+	// it answers 401 instead of redirecting a WebSocket handshake to a login page.
+	mux.HandleFunc("GET /api/v1/sessions/{id}/terminal", s.requireAPI(s.handleTerminalWS))
 	mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.requireAPI(s.handleKill))
 	mux.HandleFunc("POST /api/v1/sessions/{id}/members", s.requireAPI(s.handleAddMember))
 	mux.HandleFunc("DELETE /api/v1/sessions/{id}/members/{key}", s.requireAPI(s.handleRemoveMember))
@@ -116,6 +122,10 @@ func (s *Server) Handler() http.Handler {
 	if s.cfg.WebRoot != "" {
 		mux.Handle("/c/", http.StripPrefix("/c/", http.FileServer(http.Dir(s.cfg.WebRoot))))
 	}
+
+	// Vendored browser assets (xterm.js and its glue). Public and version-pinned:
+	// they carry no session data, and the terminal behind them is authenticated.
+	mux.Handle("/assets/", assetHandler())
 
 	// Browser endpoints, gated by OIDC (redirects to login).
 	protected := http.NewServeMux()
@@ -184,6 +194,10 @@ type sessionView struct {
 	Owner     string       `json:"owner,omitempty"`
 	Members   []memberView `json:"members,omitempty"`
 	CanManage bool         `json:"canManage"`
+	// Terminal reachability, resolved per caller: HasTerminal means covibe can
+	// drive this session's tmux server, CanWrite whether this caller may type.
+	HasTerminal bool `json:"hasTerminal"`
+	CanWrite    bool `json:"canWrite"`
 }
 
 func (s *Server) viewOf(r spool.Record, c caller) sessionView {
@@ -221,6 +235,10 @@ func (s *Server) viewOf(r spool.Record, c caller) sessionView {
 	for _, m := range s.cfg.Access.Members(r.ID) {
 		v.Members = append(v.Members, memberView{Key: m.Key, Label: m.Label()})
 	}
+	if _, ok := terminalServer(r); ok && r.Status != spool.StatusEnded {
+		v.HasTerminal = true
+		v.CanWrite = s.canWrite(r, c)
+	}
 	return v
 }
 
@@ -247,7 +265,7 @@ func (s *Server) handleKill(w http.ResponseWriter, r *http.Request) {
 		if rec.PID > 0 {
 			_ = syscall.Kill(rec.PID, syscall.SIGTERM)
 		}
-		mux.Kill(rec.Mux, rec.MuxSession)
+		mux.Kill(rec.Mux, rec.MuxSocket, rec.MuxSession)
 	}
 	// A remote wrapper lives on another machine: signaling rec.PID here could hit
 	// an unrelated local process. The wrapper's next heartbeat sees the ended
@@ -341,9 +359,14 @@ func (s *Server) handlePane(w http.ResponseWriter, r *http.Request) {
 	}
 	var out []byte
 	var err error
-	if rec.Remote {
+	switch srv, ok := terminalServer(rec); {
+	case ok:
+		// tmux is the emulator: its grid is what a human sees. The wrapper's own
+		// ring buffer keeps every byte a TUI ever overwrote, so prefer this.
+		out, err = srv.Capture(rec.MuxSession, tmuxctl.CaptureOpts{Escapes: r.URL.Query().Get("strip") != "1"})
+	case rec.Remote:
 		out, err = os.ReadFile(s.cfg.Store.PaneFilePath(rec.ID))
-	} else {
+	default:
 		out, err = readPane(s.cfg.Store.PanePath(rec.ID))
 	}
 	if err != nil {
@@ -397,11 +420,16 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		Models:    s.cfg.Models,
 		Nonce:     nonce,
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// 'self' joins the nonce for script/style because the terminal loads vendored
+	// xterm.js from /assets/. style-src-attr is separate and unavoidable: xterm
+	// sizes rows and cells with inline style attributes, which a nonce cannot
+	// cover (verified in Chromium — without it the grid geometry and colours
+	// break). Attribute styles cannot execute script, and every value the page
+	// interpolates goes through esc().
 	w.Header().Set("Content-Security-Policy",
-		"default-src 'self'; script-src 'nonce-"+nonce+"'; style-src 'nonce-"+nonce+"'; "+
-			"img-src 'self' data:; connect-src 'self'; base-uri 'none'; "+
-			"frame-ancestors 'none'; object-src 'none'; form-action 'self'")
+		"default-src 'self'; script-src 'nonce-"+nonce+"' 'self'; style-src 'nonce-"+nonce+"' 'self'; "+
+			"style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; "+
+			"base-uri 'none'; frame-ancestors 'none'; object-src 'none'; form-action 'self'")
 	if err := indexTmpl.Execute(w, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
