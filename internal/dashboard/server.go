@@ -282,7 +282,11 @@ func (s *Server) handleKill(w http.ResponseWriter, r *http.Request) {
 		if rec.PID > 0 {
 			_ = syscall.Kill(rec.PID, syscall.SIGTERM)
 		}
-		mux.Kill(rec.Mux, rec.MuxSocket, rec.MuxSession)
+		target := rec.MuxSession
+		if srv, ok := terminalServer(rec); ok {
+			target = tmuxTarget(srv, rec)
+		}
+		mux.Kill(rec.Mux, rec.MuxSocket, target)
 	}
 	// A remote wrapper lives on another machine: signaling rec.PID here could hit
 	// an unrelated local process. The wrapper's next heartbeat sees the ended
@@ -383,7 +387,7 @@ func (s *Server) handlePane(w http.ResponseWriter, r *http.Request) {
 	case ok:
 		// tmux is the emulator: its grid is what a human sees. The wrapper's own
 		// ring buffer keeps every byte a TUI ever overwrote, so prefer this.
-		out, err = srv.Capture(rec.MuxSession, tmuxctl.CaptureOpts{Escapes: r.URL.Query().Get("strip") != "1"})
+		out, err = srv.Capture(tmuxTarget(srv, rec), tmuxctl.CaptureOpts{Escapes: r.URL.Query().Get("strip") != "1"})
 	case rec.Remote:
 		out, err = os.ReadFile(s.cfg.Store.PaneFilePath(rec.ID))
 	default:

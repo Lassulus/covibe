@@ -27,6 +27,15 @@ func terminalServer(r spool.Record) (tmuxctl.Server, bool) {
 	return tmuxctl.Server{Socket: r.MuxSocket}, true
 }
 
+// tmuxTarget is the tmux session name to drive for a record. It prefers the
+// session tagged with this covibe id, so a user who renames their session from
+// inside it does not strand the dashboard on a name that no longer exists.
+// Costs one list-sessions per terminal action, which is why the cheap
+// terminalServer check above stays name-free for the listing path.
+func tmuxTarget(srv tmuxctl.Server, rec spool.Record) string {
+	return srv.SessionFor(rec.ID, rec.MuxSession)
+}
+
 // terminalTarget resolves the session for a terminal request, applying the same
 // visibility rule as everything else (404 when the caller may not see it) plus
 // the write rule: a view-only session accepts input from nobody but the people
@@ -76,7 +85,7 @@ func (s *Server) handleScreen(w http.ResponseWriter, r *http.Request) {
 	}
 	opts := tmuxctl.CaptureOpts{Lines: lines, Alt: r.URL.Query().Get("alt") == "1"}
 	opts.Escapes = format != "text"
-	out, err := srv.Capture(rec.MuxSession, opts)
+	out, err := srv.Capture(tmuxTarget(srv, rec), opts)
 	if err != nil {
 		http.Error(w, "screen unavailable: "+err.Error(), http.StatusServiceUnavailable)
 		return
@@ -165,13 +174,13 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Text != "" {
-		if err := srv.SendKeys(rec.MuxSession, []byte(req.Text)); err != nil {
+		if err := srv.SendKeys(tmuxTarget(srv, rec), []byte(req.Text)); err != nil {
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
 	}
 	for _, k := range req.Keys {
-		if err := srv.SendNamedKey(rec.MuxSession, k); err != nil {
+		if err := srv.SendNamedKey(tmuxTarget(srv, rec), k); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -252,7 +261,8 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), termIdleTimeout)
 	defer cancel()
 
-	client, err := srv.Attach(ctx, rec.MuxSession, cols, rows)
+	target := tmuxTarget(srv, rec)
+	client, err := srv.Attach(ctx, target, cols, rows)
 	if err != nil {
 		writeTermJSON(ctx, ws, map[string]any{"t": "error", "msg": err.Error()})
 		return
@@ -263,7 +273,7 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Snapshot first: clear the client's screen, then paint tmux's grid.
-	if snap, err := srv.Capture(rec.MuxSession, tmuxctl.CaptureOpts{Escapes: true}); err == nil {
+	if snap, err := srv.Capture(target, tmuxctl.CaptureOpts{Escapes: true}); err == nil {
 		if err := writeTermBinary(ctx, ws, append([]byte("\x1b[2J\x1b[H"), screenCRLF(snap)...)); err != nil {
 			return
 		}

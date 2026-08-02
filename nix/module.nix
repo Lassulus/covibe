@@ -184,10 +184,13 @@ in
         service and the covibe user's interactive shells (never globally, which
         would break other users' tmux/zellij) so zellij sessions and that user's
         `zellij attach` share one server. tmux sessions do not use it: covibe
-        runs one tmux server per covibe user on its own socket under
+        runs one tmux server per session, on its own socket under
         <stateDir>/tmux, which is what the dashboard drives for the browser
-        terminal. Reach those with `covibe attach <name>` (or `tmux -S
-        <stateDir>/tmux/<user>.sock attach`), not a bare `tmux attach`.
+        terminal. A server per session is what keeps sharing honest — a shell in
+        a pane can reach every session on its socket through $TMUX, so one
+        session per socket means a member cannot switch, inject or peek into
+        another session. Reach them with `covibe attach <name>`, not a bare
+        `tmux attach`.
       '';
     };
 

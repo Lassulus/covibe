@@ -162,7 +162,7 @@ func cmdStart(args []string) error {
 	dir := fs.String("dir", "", "working directory (default: cwd)")
 	muxName := fs.String("mux", env("COVIBE_MUX", "tmux"), "multiplexer: zellij|tmux")
 	muxSession := fs.String("session", env("COVIBE_MUX_SESSION", "covibe"), "multiplexer session name")
-	muxSocket := fs.String("mux-socket", env("COVIBE_MUX_SOCKET", ""), "tmux server socket (default <state-dir>/tmux/local.sock)")
+	muxSocket := fs.String("mux-socket", env("COVIBE_MUX_SOCKET", ""), "tmux server socket (default: a fresh one per session under <state-dir>/tmux)")
 	relayHost := fs.String("relay-host", env("COVIBE_RELAY_HOST", ""), "public host for guest links")
 	webClient := fs.String("web-client", env("COVIBE_WEB_CLIENT", "https://my.omp.sh"), "collab-web client base")
 	localRelay := fs.String("local-relay", env("COVIBE_LOCAL_RELAY", ""), "ws(s):// relay base the omp host connects to")
@@ -209,14 +209,15 @@ func cmdStart(args []string) error {
 		Model:      *model,
 		Thinking:   *thinking,
 	}
-	// A CLI-started session belongs to the host operator, so it goes on the
-	// "local" socket: one tmux server, reachable by the dashboard's terminal.
+	// Each session gets its own tmux server, so a shell in one session cannot
+	// reach another through $TMUX. That needs the id before launching.
 	if opts.MuxSocket == "" && *muxName == "tmux" {
 		store, err := spool.Open(*stateDir)
 		if err != nil {
 			return err
 		}
-		if opts.MuxSocket, err = store.TmuxSocket(""); err != nil {
+		opts.ID = launch.NewID()
+		if opts.MuxSocket, err = store.TmuxSocket("", opts.ID); err != nil {
 			return err
 		}
 	}
@@ -287,8 +288,8 @@ func cmdList(args []string) error {
 	return nil
 }
 
-// cmdAttach hands this terminal to a session's tmux. covibe pins its own socket
-// per user, so a bare `tmux attach` cannot find these sessions; this resolves
+// cmdAttach hands this terminal to a session's tmux. covibe gives each session
+// its own socket, so a bare `tmux attach` cannot find these sessions; this resolves
 // the socket and session name from the spool record and execs tmux, which keeps
 // the attach as transparent as running tmux by hand.
 func cmdAttach(args []string) error {
@@ -458,13 +459,13 @@ func cmdServe(args []string) error {
 	}
 	if *workspace != "" {
 		cfg.Create = func(sp dashboard.CreateSpec) error {
-			// One tmux server per covibe user: the socket is both the isolation
-			// boundary between users and the handle the dashboard drives to
-			// stream the terminal.
+			// One tmux server per session: the socket is both the isolation
+			// boundary — a shell in one session cannot reach another through
+			// $TMUX — and the handle the dashboard drives to stream the terminal.
 			var socket string
 			if *muxName == "tmux" {
 				var err error
-				if socket, err = store.TmuxSocket(sp.Owner); err != nil {
+				if socket, err = store.TmuxSocket(sp.Owner, sp.ID); err != nil {
 					return err
 				}
 			}

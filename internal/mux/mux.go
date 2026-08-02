@@ -281,5 +281,25 @@ func (t tmux) Launch(s Spec) error {
 	if err != nil {
 		return err
 	}
-	return run(argv)
+	if err := run(argv); err != nil {
+		return err
+	}
+	// Tag the session with the covibe id as a user option. The pane environment
+	// carries it too, but an option is queryable with a format string, so
+	// covibe can find its session again after someone renames it — best effort,
+	// because a missing tag only costs the rename-proof lookup.
+	if s.ID != "" {
+		// "=name:" and not "=name": set-option parses its target as a pane, where
+		// a bare "=name" is rejected ("no such session"). The trailing colon
+		// makes it the session's current pane, and the option still lands on the
+		// session.
+		tag := append(tmuxArgv(s.Socket), "set-option", "-t", "="+s.Session+":", IDOption, s.ID)
+		if err := run(tag); err != nil {
+			return fmt.Errorf("tag session with covibe id: %w", err)
+		}
+	}
+	return nil
 }
+
+// IDOption is the tmux user option holding a session's covibe id.
+const IDOption = "@covibe_id"

@@ -49,6 +49,9 @@ func (s Server) argv(args ...string) []string {
 // milliseconds; a hung one must not wedge an HTTP handler.
 const oneShotTimeout = 5 * time.Second
 
+// Run executes a one-shot tmux command on this server and returns stdout.
+func (s Server) Run(args ...string) ([]byte, error) { return s.run(args...) }
+
 // run executes a one-shot tmux command and returns stdout.
 func (s Server) run(args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), oneShotTimeout)
@@ -79,6 +82,32 @@ func paneTarget(session string) string { return "=" + session + ":" }
 func (s Server) HasSession(session string) bool {
 	_, err := s.run("has-session", "-t", Target(session))
 	return err == nil
+}
+
+// IDOption is the tmux user option covibe stamps a session's id into at launch
+// (see internal/mux). It is what makes targeting survive a rename: a user who
+// runs `tmux rename-session` inside their own session would otherwise strand
+// the dashboard, which only knows the name it created.
+const IDOption = "@covibe_id"
+
+// SessionFor returns the name of the session tagged with covibeID, falling back
+// to want when nothing is tagged (sessions from before the tag, or a tmux too
+// old to have kept it).
+func (s Server) SessionFor(covibeID, want string) string {
+	if covibeID == "" {
+		return want
+	}
+	out, err := s.run("list-sessions", "-F", "#{session_name}\t#{"+IDOption+"}")
+	if err != nil {
+		return want
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		name, id, ok := strings.Cut(strings.TrimRight(line, "\r"), "\t")
+		if ok && id == covibeID && name != "" {
+			return name
+		}
+	}
+	return want
 }
 
 // CaptureOpts selects what a screen read returns.

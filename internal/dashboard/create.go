@@ -75,9 +75,9 @@ type CreateSpec struct {
 	Dir      string
 	Model    string // omp --model (optional; may carry :thinking suffix)
 	Thinking string // omp --thinking level (optional)
-	// Owner is the covibe user the session belongs to. It selects the tmux
-	// server (one socket per user) the session is launched on, so one user's
-	// sessions are invisible to another user's tmux client.
+	// Owner is the covibe user the session belongs to. It names the session's
+	// tmux socket (one server per session), which is what an operator reads to
+	// tell whose session a socket belongs to.
 	Owner string
 }
 

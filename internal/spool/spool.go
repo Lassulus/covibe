@@ -140,25 +140,46 @@ func (s *Store) PaneFilePath(id string) string {
 	return filepath.Join(s.dir, id+".pane")
 }
 
-// TmuxDir is the directory holding one tmux server socket per covibe user.
+// TmuxDir is the directory holding covibe's tmux server sockets.
 func (s *Store) TmuxDir() string { return filepath.Join(s.dir, "tmux") }
 
-// TmuxSocket is the socket of the tmux server that runs a user's sessions.
-// One socket is one tmux server, so this is also the boundary between users:
-// a session on alice's socket is invisible to a tmux client on bob's. The
-// directory is created 0700 on demand, and the socket itself is created 0600 by
-// tmux (non-default sockets get no group/other bits).
-func (s *Store) TmuxSocket(user string) (string, error) {
+// TmuxSocket is the socket of the tmux server that runs one covibe session.
+//
+// One socket is one tmux server, and that server — not the session inside it —
+// is the boundary: anything with a shell in a pane can talk to its server
+// through $TMUX and reach every session there (switch-client, send-keys into
+// another session, kill-session, or create sessions covibe never sees). So the
+// socket is per session, matching how sessions are shared: a member typing in
+// one session cannot reach another session of the same owner.
+//
+// The directory is created 0700 on demand; tmux creates the socket itself 0600
+// (non-default sockets get no group/other bits). The name carries the owner for
+// operator legibility and the session's short id for uniqueness, and stays well
+// clear of sun_path's ~108 bytes.
+func (s *Store) TmuxSocket(user, sessionID string) (string, error) {
 	dir := s.TmuxDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create tmux socket dir: %w", err)
 	}
-	return filepath.Join(dir, sanitizeUser(user)+".sock"), nil
+	name := sanitizeUser(user)
+	if short := shortID(sessionID); short != "" {
+		name += "-" + short
+	}
+	return filepath.Join(dir, name+".sock"), nil
+}
+
+// shortID keeps the tail of a session id, which is the part that differs.
+func shortID(id string) string {
+	id = sanitizeUser(id)
+	if len(id) > 12 {
+		id = id[len(id)-12:]
+	}
+	return strings.Trim(id, "-")
 }
 
 // sanitizeUser turns a covibe user key (an email, a sub, a username) into one
-// safe path component. Unowned sessions — started from the CLI on the host —
-// share the "local" socket, which is the host operator's own server.
+// safe path component, so an operator can read whose session a socket belongs
+// to. Unowned sessions — started from the CLI on the host — say "local".
 func sanitizeUser(user string) string {
 	user = strings.TrimSpace(strings.ToLower(user))
 	if user == "" {

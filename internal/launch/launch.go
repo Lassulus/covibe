@@ -20,7 +20,7 @@ type Options struct {
 	Dir        string
 	Mux        string // "zellij" | "tmux"
 	MuxSession string
-	MuxSocket  string // tmux server socket (per covibe user); empty uses the default server
+	MuxSocket  string // tmux server socket (one per session); empty uses the default server
 	RelayHost  string // public host for guest links, e.g. "covibe.lassul.us"
 	WebClient  string // collab-web base for browser links, e.g. "https://my.omp.sh"
 	LocalRelay string // ws(s):// base the omp host connects to
@@ -92,12 +92,19 @@ func (o Options) spec() (mux.Launcher, mux.Spec, string, error) {
 	return l, mux.Spec{ID: id, Name: o.Name, Dir: o.Dir, Session: sess, Socket: o.MuxSocket, InnerArgv: inner}, sess, nil
 }
 
+// NewID mints a stable session id. Callers that need the id before launching —
+// to derive this session's tmux socket, say — mint it here so there is one
+// definition of what an id looks like.
+func NewID() string {
+	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())
+}
+
 // resolveSession fills a stable id (generating one when empty) and the derived
 // per-session mux session name.
 func (o Options) resolveSession() (id, sess string) {
 	id = o.ID
 	if id == "" {
-		id = fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())
+		id = NewID()
 	}
 	return id, mux.SessionName(o.MuxSession, o.Name, id)
 }

@@ -505,3 +505,43 @@ func TestBurstInputKeepsOrder(t *testing.T) {
 	}
 	t.Fatalf("burst arrived shuffled or incomplete; screen:\n%s", screen)
 }
+
+// A user with a shell in their own session can rename it. The dashboard only
+// knows the name it created, so targeting has to follow the covibe id stamped
+// on the session instead of trusting the name.
+func TestTerminalSurvivesSessionRename(t *testing.T) {
+	s, id := termServer(t, "cat")
+	rec, err := s.cfg.Store.Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, ok := terminalServer(*rec)
+	if !ok {
+		t.Fatal("expected a drivable session")
+	}
+	// Stamp the tag the launcher would have set, then rename behind our back.
+	if _, err := srv.Run("set-option", "-t", "="+rec.MuxSession+":", tmuxctl.IDOption, rec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.Run("rename-session", "-t", "="+rec.MuxSession, "renamed-by-the-user"); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := tmuxTarget(srv, *rec); got != "renamed-by-the-user" {
+		t.Fatalf("target after rename = %q, want the renamed session", got)
+	}
+	if rec := as(t, s, bobID, "GET", "/api/v1/sessions/"+id+"/screen?format=text", ""); rec.Code != http.StatusOK {
+		t.Fatalf("screen after rename: %d %s", rec.Code, rec.Body.String())
+	}
+	if r := as(t, s, bobID, "POST", "/api/v1/sessions/"+id+"/input", `{"text":"still-reachable\n"}`); r.Code != http.StatusOK {
+		t.Fatalf("input after rename: %d %s", r.Code, r.Body.String())
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(as(t, s, bobID, "GET", "/api/v1/sessions/"+id+"/screen?format=text", "").Body.String(), "still-reachable") {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("input never reached the renamed session")
+}
