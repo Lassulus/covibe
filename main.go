@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -40,6 +41,8 @@ func main() {
 		err = cmdStart(os.Args[2:])
 	case "list":
 		err = cmdList(os.Args[2:])
+	case "attach":
+		err = cmdAttach(os.Args[2:])
 	case "serve":
 		err = cmdServe(os.Args[2:])
 	case "version", "--version", "-v":
@@ -64,6 +67,7 @@ usage:
   covibe start   <name> [flags]     open an omp session in a mux tab and share it
   covibe session         [flags]    (internal) pty-proxy run by the mux; wraps omp
   covibe list            [flags]    list live sessions
+  covibe attach  <name>  [flags]    attach a local session's terminal in this shell
   covibe serve           [flags]    run the OIDC-protected session dashboard
   covibe version
 
@@ -228,7 +232,12 @@ func cmdStart(args []string) error {
 	if err != nil {
 		return err
 	}
+	// The session lives on covibe's own tmux socket, not the user's default
+	// server, so a bare `tmux ls` will not show it. Say how to reach it.
 	fmt.Printf("started %q in %s session %q\n", *name, *muxName, sess)
+	if opts.MuxSocket != "" {
+		fmt.Printf("attach with: covibe attach %s   (or: tmux -S %s attach -t =%s)\n", *name, opts.MuxSocket, sess)
+	}
 	return nil
 }
 
@@ -262,6 +271,66 @@ func cmdList(args []string) error {
 		fmt.Printf("%-8s %-16s %-8s %s\n\t%s\n", r.Status, r.Name, r.Mux, r.Dir, link)
 	}
 	return nil
+}
+
+// cmdAttach hands this terminal to a session's tmux. covibe pins its own socket
+// per user, so a bare `tmux attach` cannot find these sessions; this resolves
+// the socket and session name from the spool record and execs tmux, which keeps
+// the attach as transparent as running tmux by hand.
+func cmdAttach(args []string) error {
+	fs := flag.NewFlagSet("attach", flag.ExitOnError)
+	stateDir := fs.String("state-dir", "", "spool directory")
+	readOnly := fs.Bool("read-only", false, "attach without being able to type")
+	var posName string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		posName, args = args[0], args[1:]
+	}
+	_ = fs.Parse(args)
+	if posName == "" && fs.NArg() > 0 {
+		posName = fs.Arg(0)
+	}
+	if posName == "" {
+		return fmt.Errorf("session name or id required")
+	}
+	store, err := spool.Open(*stateDir)
+	if err != nil {
+		return err
+	}
+	recs, err := store.Live(30 * time.Second)
+	if err != nil {
+		return err
+	}
+	var match *spool.Record
+	for i, r := range recs {
+		if r.ID == posName || r.Name == posName || r.MuxSession == posName {
+			match = &recs[i]
+			break
+		}
+	}
+	if match == nil {
+		return fmt.Errorf("no live session %q (covibe list shows what is running here)", posName)
+	}
+	if match.Remote {
+		return fmt.Errorf("session %q runs on %s; attach it there, or open its terminal in the dashboard", posName, orDefault(match.Host, "another machine"))
+	}
+	if match.Mux != "tmux" || match.MuxSession == "" {
+		return fmt.Errorf("session %q runs under %s, which covibe cannot attach for you", posName, orDefault(match.Mux, "an unknown mux"))
+	}
+	argv := []string{"tmux"}
+	if match.MuxSocket != "" {
+		argv = append(argv, "-S", match.MuxSocket)
+	}
+	argv = append(argv, "attach-session", "-t", "="+match.MuxSession)
+	if *readOnly {
+		argv = append(argv, "-r")
+	}
+	bin, err := exec.LookPath(argv[0])
+	if err != nil {
+		return fmt.Errorf("tmux not found: %w", err)
+	}
+	// exec rather than fork: the user's terminal becomes tmux's, and detaching
+	// returns them to their shell with no covibe process in between.
+	return syscall.Exec(bin, argv, os.Environ())
 }
 
 // cmdServe runs the dashboard.

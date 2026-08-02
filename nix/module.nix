@@ -182,8 +182,12 @@ in
         Directory pinning the multiplexer control sockets (ZELLIJ_SOCKET_DIR =
         <socketDir>/zellij, TMUX_TMPDIR = <socketDir>). Set on the dashboard
         service and the covibe user's interactive shells (never globally, which
-        would break other users' tmux/zellij) so web-created sessions and that
-        user's `zellij attach`/`tmux attach` share one server.
+        would break other users' tmux/zellij) so zellij sessions and that user's
+        `zellij attach` share one server. tmux sessions do not use it: covibe
+        runs one tmux server per covibe user on its own socket under
+        <stateDir>/tmux, which is what the dashboard drives for the browser
+        terminal. Reach those with `covibe attach <name>` (or `tmux -S
+        <stateDir>/tmux/<user>.sock attach`), not a bare `tmux attach`.
       '';
     };
 
@@ -443,11 +447,12 @@ in
     environment.systemPackages = lib.mkIf cfg.installGlobally ([ cfg.package ] ++ cfg.extraPackages);
     environment.variables = lib.mkIf cfg.installGlobally sharedEnv;
 
-    # The covibe user shares the dashboard's multiplexer server so `zellij
-    # attach` / `tmux attach` reach web-created sessions. Scope the socket dirs
-    # to that user's interactive shells; a global export (environment.variables)
-    # would point every other user's tmux/zellij at ${cfg.socketDir}, which only
-    # the covibe user can write — breaking their login shell.
+    # Scope the socket dirs to the covibe user's interactive shells so their
+    # `zellij attach` finds web-created zellij sessions; a global export
+    # (environment.variables) would point every other user's tmux/zellij at
+    # ${cfg.socketDir}, which only the covibe user can write — breaking their
+    # login shell. tmux sessions live on covibe's own per-user socket instead
+    # (see socketDir), so `covibe attach` is the way in.
     environment.interactiveShellInit = lib.mkIf cfg.installGlobally ''
       if [ "$(id -un)" = ${lib.escapeShellArg cfg.user} ]; then
         export ZELLIJ_SOCKET_DIR=${lib.escapeShellArg socketEnv.ZELLIJ_SOCKET_DIR}
