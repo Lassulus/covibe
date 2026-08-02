@@ -106,6 +106,7 @@ func cmdSession(args []string) error {
 	model := fs.String("model", env("COVIBE_MODEL", ""), "omp model selector (optional)")
 	thinking := fs.String("thinking", env("COVIBE_THINKING", ""), "omp thinking level (optional)")
 	dashboardURL := fs.String("dashboard", env("COVIBE_DASHBOARD", ""), "dashboard base URL for remote registration; enables remote mode")
+	token := fs.String("token", env("COVIBE_TOKEN", ""), "per-user dashboard API key; makes the session owned and enables its web terminal")
 	_ = fs.Parse(args)
 
 	if *dir == "" {
@@ -134,9 +135,12 @@ func cmdSession(args []string) error {
 		Mux:        *muxName,
 		MuxSession: *muxSession,
 		MuxSocket:  *muxSocket,
+		Token:      *token,
 	}
 	if *dashboardURL != "" {
-		cfg.Sink = session.NewRemoteSink(*dashboardURL)
+		remote := session.NewRemoteSink(*dashboardURL)
+		remote.Token = *token
+		cfg.Sink = remote
 	} else {
 		store, err := spool.Open(*stateDir)
 		if err != nil {
@@ -285,6 +289,8 @@ func cmdServe(args []string) error {
 	ompBin := fs.String("omp", env("COVIBE_OMP", "omp"), "omp binary for created sessions")
 	apiKeys := fs.String("api-keys", env("COVIBE_API_KEYS", ""), "comma/space-separated API keys for the /api/v1 REST surface")
 	apiKeysFile := fs.String("api-keys-file", env("COVIBE_API_KEYS_FILE", ""), "file of API keys (one per line, # comments) for /api/v1")
+	userKeys := fs.String("user-keys", env("COVIBE_USER_KEYS", ""), "comma/space-separated user:token pairs; a request carrying the token acts as that user")
+	userKeysFile := fs.String("user-keys-file", env("COVIBE_USER_KEYS_FILE", ""), "file of user:token pairs (one per line, # comments)")
 	maxSessions := fs.Int("max-sessions", envInt("COVIBE_MAX_SESSIONS", 0), "cap on concurrent live sessions (0 = unlimited)")
 	localRelay := fs.String("local-relay", env("COVIBE_LOCAL_RELAY", ""), "ws(s):// relay base the omp host connects to (default ws://<addr>)")
 	webRoot := fs.String("web-root", env("COVIBE_WEB_ROOT", ""), "dir of collab-web static assets served at /c/ (self-hosted client)")
@@ -328,6 +334,11 @@ func cmdServe(args []string) error {
 	}
 	keys, err := dashboard.LoadAPIKeys(*apiKeys, *apiKeysFile)
 	if err != nil {
+		return err
+	}
+	// Machine keys reach every session; a user key acts as exactly one user, so
+	// a laptop registering a session gets a session that user owns.
+	if err := keys.AddUserKeys(*userKeys, *userKeysFile); err != nil {
 		return err
 	}
 	cfg := dashboard.Config{

@@ -89,6 +89,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "register failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// A per-user key makes the announcement *theirs*: it shows up in that user's
+	// dashboard and they can share it. Ownership comes from the key alone, never
+	// from an ambient identity — in no-auth mode every request looks like the
+	// local user, and a keyless registration must stay ownerless (admin-visible
+	// only), since the announce surface is open to any machine.
+	if owner := s.callerOf(r).user; owner != "" {
+		_ = s.cfg.Access.SetOwner(rec.ID, owner)
+	}
 	writeJSON(w, http.StatusCreated, map[string]string{"id": rec.ID})
 }
 

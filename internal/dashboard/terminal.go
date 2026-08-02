@@ -224,11 +224,22 @@ func screenCRLF(screen []byte) []byte {
 // from capture-pane, so a late joiner sees the current screen before any new
 // output arrives — the same reason tmux needs no emulator on our side.
 func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
-	rec, srv, c, ok := s.terminalTarget(w, r)
+	rec, c, ok := s.visibleRecord(w, r)
 	if !ok {
 		return
 	}
 	write := s.canWrite(rec, c)
+	// A remote session's terminal is hosted by its wrapper; relay to it instead
+	// of looking for a tmux server that lives on someone else's machine.
+	if rec.Remote {
+		s.serveRemoteTerminal(w, r, rec, write)
+		return
+	}
+	srv, ok := terminalServer(rec)
+	if !ok {
+		http.Error(w, "session has no covibe-driven terminal", http.StatusConflict)
+		return
+	}
 	cols, _ := strconv.Atoi(r.URL.Query().Get("cols"))
 	rows, _ := strconv.Atoi(r.URL.Query().Get("rows"))
 	cols, rows = termSize(cols, rows)

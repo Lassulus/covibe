@@ -56,6 +56,8 @@ let
       COVIBE_MAX_SESSIONS = toString d.maxSessions;
       COVIBE_MODELS = lib.concatStringsSep "," d.models;
       COVIBE_API_KEYS_FILE = d.apiKeysFile;
+      COVIBE_USER_KEYS = lib.concatStringsSep "," d.userKeys;
+      COVIBE_USER_KEYS_FILE = d.userKeysFile;
       COVIBE_OIDC_ISSUER = d.oidc.issuer;
       COVIBE_OIDC_CLIENT_ID = d.oidc.clientId;
       COVIBE_OIDC_REDIRECT_URL = d.oidc.redirectUrl;
@@ -372,6 +374,38 @@ in
         '';
       };
 
+      userKeys = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [ "alice@example.com:CHANGEME" ];
+        description = ''
+          Per-user API keys, one `user:token` per entry, where user is the OIDC
+          email, subject id or preferred_username (matched the same way admins
+          and session members are). A request carrying such a token acts AS
+          that user: a session registered with it is owned by them and appears
+          in their dashboard, unlike a keyless registration, which is owned by
+          nobody and is therefore visible to admins only.
+
+          This is not apiKeysFile: those are machine/admin credentials with
+          access to every session, while a user key acts as exactly one user.
+
+          Tokens listed here land in the world-readable Nix store and in the
+          unit's environment, so userKeysFile is the production choice.
+        '';
+      };
+
+      userKeysFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = ''
+          File of per-user API keys (one `user:token` per line, `#` comments)
+          with the same meaning as userKeys but kept out of the Nix store —
+          point it at a secret-manager path readable by the service user.
+          Inline pairs can also be supplied as COVIBE_USER_KEYS via
+          environmentFile.
+        '';
+      };
+
       environmentFile = lib.mkOption {
         type = lib.types.nullOr lib.types.path;
         default = null;
@@ -397,6 +431,12 @@ in
           cfg.dashboard.enable
           -> (d.noAuth || (d.oidc.issuer != "" && d.oidc.clientId != "" && d.oidc.redirectUrl != ""));
         message = "services.covibe.dashboard: set dashboard.oidc.{issuer,clientId,redirectUrl} or dashboard.noAuth = true.";
+      }
+      {
+        # A pair without a colon names no user, so the token would silently
+        # authorize nobody: fail at eval time instead.
+        assertion = lib.all (lib.hasInfix ":") d.userKeys;
+        message = "services.covibe.dashboard.userKeys: every entry must be of the form user:token.";
       }
     ];
 

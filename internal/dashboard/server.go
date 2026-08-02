@@ -46,13 +46,16 @@ type Config struct {
 
 // Server serves the OIDC-protected session dashboard.
 type Server struct {
-	cfg      Config
-	fails    *failLimiter
-	relay    *Relay
-	killed   *killRegistry
-	mmu      sync.Mutex
-	models   []ModelOption
-	modelsAt time.Time
+	cfg    Config
+	fails  *failLimiter
+	relay  *Relay
+	killed *killRegistry
+	// termHosts holds the remote wrappers currently offering a terminal; a
+	// remote session's terminal lives on their machine, not here.
+	termHosts *termHosts
+	mmu       sync.Mutex
+	models    []ModelOption
+	modelsAt  time.Time
 }
 
 // NewServer builds the dashboard server.
@@ -66,7 +69,10 @@ func NewServer(cfg Config) *Server {
 		cfg.Access, _ = access.Open("")
 	}
 	// Throttle a client after 10 failed auth attempts per minute.
-	s := &Server{cfg: cfg, fails: newFailLimiter(10, time.Minute), relay: newRelay(), killed: newKillRegistry()}
+	s := &Server{
+		cfg: cfg, fails: newFailLimiter(10, time.Minute),
+		relay: newRelay(), killed: newKillRegistry(), termHosts: newTermHosts(),
+	}
 	if cfg.Auth != nil {
 		cfg.Auth.OnLogin = func(id Identity) {
 			s.cfg.Access.Seen(id.Sub, id.Email, id.Name, id.Username)
@@ -99,6 +105,9 @@ func (s *Server) Handler() http.Handler {
 	// The terminal stream is a browser endpoint but lives on the API surface so
 	// it answers 401 instead of redirecting a WebSocket handshake to a login page.
 	mux.HandleFunc("GET /api/v1/sessions/{id}/terminal", s.requireAPI(s.handleTerminalWS))
+	// The other end of that stream for a remote session: the wrapper dials in and
+	// stays connected, because the dashboard cannot reach another machine.
+	mux.HandleFunc("GET /api/v1/sessions/{id}/terminal/host", s.handleTerminalHost)
 	mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.requireAPI(s.handleKill))
 	mux.HandleFunc("POST /api/v1/sessions/{id}/members", s.requireAPI(s.handleAddMember))
 	mux.HandleFunc("DELETE /api/v1/sessions/{id}/members/{key}", s.requireAPI(s.handleRemoveMember))
@@ -235,9 +244,14 @@ func (s *Server) viewOf(r spool.Record, c caller) sessionView {
 	for _, m := range s.cfg.Access.Members(r.ID) {
 		v.Members = append(v.Members, memberView{Key: m.Key, Label: m.Label()})
 	}
-	if _, ok := terminalServer(r); ok && r.Status != spool.StatusEnded {
-		v.HasTerminal = true
-		v.CanWrite = s.canWrite(r, c)
+	// A local session is drivable through its tmux socket; a remote one only
+	// while its wrapper is connected and offering the terminal.
+	if r.Status != spool.StatusEnded {
+		_, local := terminalServer(r)
+		if local || (r.Remote && s.termHosts.live(r.ID)) {
+			v.HasTerminal = true
+			v.CanWrite = s.canWrite(r, c)
+		}
 	}
 	return v
 }
@@ -271,6 +285,9 @@ func (s *Server) handleKill(w http.ResponseWriter, r *http.Request) {
 	// an unrelated local process. The wrapper's next heartbeat sees the ended
 	// record (or the tombstone below, once the record is pruned) and stops omp.
 	s.killed.remember(rec.ID, rec.RoomID)
+	// Close the hosted terminal too: the browsers watching it should see the
+	// session end, not hang on a wrapper that is on its way out.
+	s.dropTermHost(rec.ID)
 	rec.Status = spool.StatusEnded
 	_ = s.cfg.Store.Save(&rec)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "killed", "id": rec.ID})

@@ -23,6 +23,7 @@ import (
 
 	"github.com/lassulus/covibe/internal/collablink"
 	"github.com/lassulus/covibe/internal/spool"
+	"github.com/lassulus/covibe/internal/tmuxctl"
 )
 
 // Config parameterizes a session wrapper.
@@ -40,6 +41,7 @@ type Config struct {
 	Mux        string // "zellij" | "tmux"
 	MuxSession string
 	MuxSocket  string // tmux server socket the session runs on (recorded for the dashboard)
+	Token      string // per-user dashboard API key; empty disables the remote terminal
 	Store      *spool.Store
 	Sink       Sink // lifecycle backend; nil uses the local on-disk spool (cfg.Store)
 }
@@ -146,13 +148,37 @@ func Run(cfg Config) error {
 	killed, stopWatch := sink.Watch(rec, pane)
 	defer stopWatch()
 
+	// Remote terminal: the dashboard cannot dial this machine, so the wrapper
+	// dials out and relays its terminal to whoever opens it in the browser. It
+	// needs a per-user key to prove which user owns this session; without one
+	// (or without a dashboard) the session simply has no terminal, as before.
+	// Nothing here is allowed to affect omp: a broken relay is not a dead agent.
+	var fan *fanout
+	if ds, ok := sink.(dashboardSink); ok && cfg.Token != "" && ds.DashboardBase() != "" {
+		var src termSource
+		if cfg.MuxSocket != "" && cfg.MuxSession != "" {
+			src = &tmuxSource{srv: tmuxctl.Server{Socket: cfg.MuxSocket}, session: cfg.MuxSession}
+		} else {
+			fan = newFanout()
+			src = &ptySource{ptmx: ptmx, pane: pane, fan: fan}
+		}
+		host := newTermHost(ds, cfg.Token, !rec.ViewOnly, ptmx, src)
+		host.start()
+		defer host.stop()
+	}
+
 	// stdin → omp
 	go func() { _, _ = io.Copy(ptmx, os.Stdin) }()
 
-	// omp → stdout, tapped by the pane ring for snapshots.
+	// omp → stdout, tapped by the pane ring for snapshots and, when the terminal
+	// host streams the pty, by its fan-out. One reader on the pty, several taps.
+	tee := []io.Writer{os.Stdout, pane}
+	if fan != nil {
+		tee = append(tee, fan)
+	}
 	done := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(io.MultiWriter(os.Stdout, pane), ptmx)
+		_, _ = io.Copy(io.MultiWriter(tee...), ptmx)
 		close(done)
 	}()
 

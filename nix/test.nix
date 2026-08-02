@@ -10,6 +10,9 @@
 # /collab, which is exactly what the link sniffer consumes.
 # Auth runs in no-auth mode so the test needs no OIDC provider (the OIDC path is
 # covered by unit tests).
+# It also covers the remote path: a wrapper registering over REST with a
+# per-user key (dashboard.userKeys) gets a session owned by that user, while a
+# keyless registration stays unowned and thus admin-only.
 { pkgs, self }:
 let
   fakeOmp = pkgs.writeShellScriptBin "omp" ''
@@ -54,6 +57,9 @@ pkgs.testers.runNixOSTest {
           workspaceRoot = "/home/vibe/covibe";
           # Exercise the machine-facing REST surface with a real API key.
           extraSettings.COVIBE_API_KEYS = "test-key";
+          # Per-user key: a request carrying it acts as vibe@example.com, so a
+          # session registered with it is owned by them (not admin-only).
+          userKeys = [ "vibe@example.com:usertoken123" ];
         };
       };
 
@@ -156,5 +162,49 @@ pkgs.testers.runNixOSTest {
     # Killing the tmux session ends the pane; the dashboard prunes it.
     machine.succeed(tmux(sock, "kill-session -t covibe"))
     machine.wait_until_succeeds(api(API) + " | grep -q '^\[\]'", timeout=30)
+
+    # --- Remote registration ------------------------------------------------
+    # A wrapper on another machine registers over REST. With a per-user key the
+    # session is attributed to that user; without one it belongs to nobody.
+    # noAuth makes the *keyless* caller an admin, but a user key never inherits
+    # that: it is matched against dashboard.admins, which is empty here.
+    USER = "usertoken123"
+
+    def uapi(args):
+        return f"curl -sf -H 'Authorization: Bearer {USER}' {args}"
+
+    def register(token, name):
+        hdr = f"-H 'Authorization: Bearer {token}' " if token else ""
+        code = machine.succeed(
+            f"curl -s -o /tmp/reg.json -w '%{{http_code}}' -X POST {hdr}"
+            f"-H 'Content-Type: application/json' -d '{{\"name\":\"{name}\"}}' {API}/register"
+        )
+        return json.loads(machine.succeed("cat /tmp/reg.json")), code
+
+    owned, code = register(USER, "laptop")
+    assert code == "201", f"user-key register should be 201, got {code}"
+    oid = owned["id"]
+
+    # Its owner sees it by id and in their list, attributed to them.
+    mine = json.loads(machine.succeed(uapi(f"{API}/{oid}")))
+    assert mine["name"] == "laptop", mine
+    assert "vibe@example.com" in mine.get("owner", ""), mine
+    listed = machine.succeed(uapi(API))
+    assert oid in listed, listed
+
+    # The same registration without a token is owned by nobody: admins still
+    # see it, a plain user key does not — neither in the list nor by id.
+    anon, code = register(None, "orphan")
+    assert code == "201", f"keyless register should be 201, got {code}"
+    aid = anon["id"]
+    admin_list = machine.succeed(api(API))
+    assert aid in admin_list, admin_list
+    user_list = machine.succeed(uapi(API))
+    assert aid not in user_list, user_list
+    code = machine.succeed(
+        "curl -s -o /dev/null -w '%{http_code}' "
+        f"-H 'Authorization: Bearer {USER}' {API}/{aid}"
+    )
+    assert code == "404", f"unowned session should be 404 for a plain user, got {code}"
   '';
 }

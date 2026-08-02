@@ -31,13 +31,17 @@ func (s *Server) label(handle string) string {
 	return handle
 }
 
-// caller is the authorized principal behind a request: an API key (machine,
-// full access), a logged-in browser identity, or nobody. It is computed once by
-// requireAPI and carried in the request context so handlers authorize without
-// re-parsing cookies.
+// caller is the authorized principal behind a request: an API key — either an
+// unattributed machine credential with full access, or one bound to a covibe
+// user and acting as them — a logged-in browser identity, or nobody. It is
+// computed once by requireAPI and carried in the request context so handlers
+// authorize without re-parsing cookies.
 type caller struct {
-	id         Identity
-	machine    bool
+	id      Identity
+	machine bool
+	// user is set when the credential is a per-user key; the caller then has
+	// that user's reach and nothing more.
+	user       string
 	admin      bool
 	principals []string
 }
@@ -58,10 +62,21 @@ func (s *Server) callerOf(r *http.Request) caller {
 }
 
 func (s *Server) newCaller(r *http.Request) caller {
-	if s.cfg.APIKeys.Valid(bearerToken(r)) {
-		// A key is the operator's own credential: it manages every session, the
-		// same way the CLI on the host does.
-		return caller{machine: true, admin: true}
+	if user, ok := s.cfg.APIKeys.Lookup(bearerToken(r)); ok {
+		if user == "" {
+			// An unattributed key is the operator's own credential: it manages
+			// every session, the same way the CLI on the host does.
+			return caller{machine: true, admin: true}
+		}
+		// A user key is that user's credential on another machine: it sees and
+		// manages exactly what they would, so a laptop registering a session
+		// gets a session they own rather than an ownerless one.
+		return caller{
+			machine:    true,
+			user:       user,
+			admin:      s.cfg.Auth.adminHandle([]string{user}),
+			principals: []string{user},
+		}
 	}
 	id, ok := s.cfg.Auth.Current(r)
 	if !ok {
@@ -74,6 +89,9 @@ func (s *Server) newCaller(r *http.Request) caller {
 // ownership. Machine callers have none: sessions they create stay unowned and
 // therefore admin-visible.
 func (c caller) key() string {
+	if c.user != "" {
+		return c.user
+	}
 	if c.machine {
 		return ""
 	}

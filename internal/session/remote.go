@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lassulus/covibe/internal/spool"
@@ -27,9 +28,18 @@ var errSessionGone = errors.New("remote session no longer registered")
 // the dashboard, so the session still shows up in the overview. The dashboard
 // GCs the announcement once the heartbeat stops.
 type RemoteSink struct {
+	// Token is a per-user API key (COVIBE_USER_KEYS on the dashboard). It makes
+	// the request act as that user, which is how a remote session gets an owner.
+	// Empty keeps the historical keyless behaviour: the session registers
+	// unowned and only admins see it.
+	Token string
+
 	base     string // dashboard base URL, e.g. https://covibe.lassul.us
 	interval time.Duration
 	client   *http.Client
+
+	mu sync.Mutex
+	id string // server-minted id; changes when Watch re-registers
 }
 
 // NewRemoteSink builds a sink targeting the dashboard at base.
@@ -39,6 +49,25 @@ func NewRemoteSink(base string) *RemoteSink {
 		interval: 4 * time.Second,
 		client:   &http.Client{Timeout: 15 * time.Second},
 	}
+}
+
+// auth presents the per-user key, if one is configured.
+func (s *RemoteSink) auth(req *http.Request) {
+	if s.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+s.Token)
+	}
+}
+
+// DashboardBase is the dashboard this session is announced to.
+func (s *RemoteSink) DashboardBase() string { return s.base }
+
+// SessionID is the id the dashboard last minted for this session. It is not
+// stable for the session's lifetime: Watch re-registers when the dashboard
+// forgets us, so anything long-lived (the terminal host) must re-read it.
+func (s *RemoteSink) SessionID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.id
 }
 
 func (s *RemoteSink) do(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
@@ -53,6 +82,7 @@ func (s *RemoteSink) do(ctx context.Context, method, path string, body []byte) (
 	if body != nil {
 		req.Header.Set("Content-Type", "application/octet-stream")
 	}
+	s.auth(req)
 	return s.client.Do(req)
 }
 
@@ -83,6 +113,7 @@ func (s *RemoteSink) Register(rec *spool.Record) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	s.auth(req)
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return err
@@ -102,6 +133,9 @@ func (s *RemoteSink) Register(rec *spool.Record) error {
 		return fmt.Errorf("register: dashboard returned no id")
 	}
 	rec.ID = out.ID
+	s.mu.Lock()
+	s.id = out.ID
+	s.mu.Unlock()
 	if rec.BrowserURL != "" {
 		fmt.Fprintf(os.Stderr, "\n  covibe: session registered on %s\n  browser  %s\n\n", s.base, rec.BrowserURL)
 	}
