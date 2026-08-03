@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -101,9 +100,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRemotePane is the remote wrapper's periodic heartbeat: it bumps the
-// record's liveness clock and, when the body is non-empty, stores the pushed
-// terminal snapshot for the dashboard's pane view. The reply tells the wrapper
-// whether the session has been killed from the dashboard so it can stop omp.
+// record's liveness clock. The reply tells the wrapper whether the session has
+// been killed from the dashboard so it can stop omp. A body is read and
+// discarded — the screen of a remote session is served live by its terminal
+// host, not by a pushed snapshot.
 func (s *Server) handleRemotePane(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	rec, err := s.cfg.Store.Load(id)
@@ -124,13 +124,9 @@ func (s *Server) handleRemotePane(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"stop": true})
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 512<<10))
-	if err != nil {
+	if _, err := io.Copy(io.Discard, http.MaxBytesReader(w, r.Body, 512<<10)); err != nil {
 		http.Error(w, "read body", http.StatusBadRequest)
 		return
-	}
-	if len(body) > 0 {
-		_ = os.WriteFile(s.cfg.Store.PaneFilePath(rec.ID), body, 0o600)
 	}
 	// Re-save to bump UpdatedAt so Alive() keeps the record live.
 	if err := s.cfg.Store.Save(rec); err != nil {

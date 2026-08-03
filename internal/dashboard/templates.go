@@ -61,11 +61,6 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
   .newform input#newdir { min-width:160px; }
   .newerr { color:#f85149; font-size:.8rem; }
   .kill { border-color:#5a2a2a; }
-  .modal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; padding:1.5rem; z-index:10; }
-  .modal[hidden] { display:none; }
-  .modalbox { background:var(--card); border:1px solid #30363d; width:min(900px,100%); max-height:85vh; display:flex; flex-direction:column; }
-  .modalhead { display:flex; justify-content:space-between; align-items:center; padding:.6rem 1rem; border-bottom:1px solid #30363d; }
-  .pane-out { margin:0; padding:1rem; overflow:auto; font-family:ui-monospace,monospace; font-size:.78rem; white-space:pre-wrap; word-break:break-word; }
   a.term { color:var(--accent); text-decoration:none; font-size:.78rem; border:1px solid #30363d; padding:.25rem .55rem; }
   a.term:hover { border-color:var(--accent); }
 </style>
@@ -108,12 +103,6 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
   <div id="empty" class="empty" hidden>No live sessions.{{if not .CanCreate}} Start one with <code>covibe start &lt;name&gt;</code>.{{end}}</div>
   {{if .IsAdmin}}<datalist id="userlist"></datalist>{{end}}
 </main>
-<div id="panemodal" class="modal" hidden>
-  <div class="modalbox">
-    <div class="modalhead"><strong id="panetitle"></strong><button id="paneclose">close</button></div>
-    <pre id="panepre" class="pane-out"></pre>
-  </div>
-</div>
 <script nonce="{{.Nonce}}">
 const table = document.getElementById('sessions');
 const head = document.getElementById('head');
@@ -126,7 +115,6 @@ const qrOpen = new Set();
 const shareOpen = new Set();
 const shareDraft = new Map();
 const IS_ADMIN = {{.IsAdmin}};
-document.getElementById('paneclose').onclick = ()=>{ document.getElementById('panemodal').hidden = true; };
 
 function esc(s){ return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
@@ -224,7 +212,6 @@ function rowsFor(s){
   // opens in its own tab: a shell deserves the whole viewport, and the 4s row
   // rebuild here must never touch a live WebSocket.
   if (s.hasTerminal) body += '<a class="term" href="/t/'+encodeURIComponent(s.id)+'" target="_blank" rel="noopener">term</a> ';
-  body += '<button class="pane" data-pane="'+esc(s.id)+'">pane</button>';
   // Kill answers 403 without manage rights, so don't offer a button that only fails.
   if (s.canManage) body += ' <button class="kill" data-kill="'+esc(s.id)+'">kill</button>';
   body += '</td>';
@@ -330,7 +317,6 @@ function rowsFor(s){
     qrBtn.onclick = ()=> show(panel.hidden);
     if (qrOpen.has(s.id)) show(true);
   }
-  tr.querySelector('button[data-pane]').onclick = ()=>showPane(s.id, s.name||s.id);
   const killBtn = tr.querySelector('button[data-kill]');
   if (killBtn) killBtn.onclick = async (ev)=>{
     if (!confirm('Kill session '+(s.name||s.id)+'?')) return;
@@ -364,18 +350,6 @@ function render(){
   }
   empty.hidden = current.length > 0;
   table.hidden = current.length === 0;
-}
-
-async function showPane(id, name){
-  const modal = document.getElementById('panemodal');
-  const pre = document.getElementById('panepre');
-  document.getElementById('panetitle').textContent = name;
-  pre.textContent = 'loading…';
-  modal.hidden = false;
-  try {
-    const res = await fetch('/api/v1/sessions/'+encodeURIComponent(id)+'/pane?strip=1', {headers:{'Accept':'text/plain'}});
-    pre.textContent = res.ok ? (await res.text()) : ('pane unavailable ('+res.status+')');
-  } catch(e){ pre.textContent = String(e); }
 }
 
 async function refresh(){

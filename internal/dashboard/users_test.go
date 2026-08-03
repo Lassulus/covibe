@@ -158,15 +158,15 @@ func TestCanManageOnlyForOwnerAndAdmin(t *testing.T) {
 // dashboard leaks who is working on what.
 func TestOutsiderGetsNotFound(t *testing.T) {
 	s := aclServer(t)
-	for _, path := range []string{"/api/v1/sessions/s-alice", "/api/v1/sessions/s-alice/pane"} {
+	for _, path := range []string{"/api/v1/sessions/s-alice", "/api/v1/sessions/s-alice/screen"} {
 		if rec := as(t, s, carolID, "GET", path, ""); rec.Code != http.StatusNotFound {
 			t.Fatalf("%s: %d want 404", path, rec.Code)
 		}
 	}
-	// A member reaches the pane (503 here: no wrapper socket in the test), which
-	// proves the ACL and not the record decides.
-	if rec := as(t, s, aliceID, "GET", "/api/v1/sessions/s-shared/pane", ""); rec.Code == http.StatusNotFound {
-		t.Fatal("member denied the pane of a session they were added to")
+	// A member reaches the session they were added to, which proves the ACL and
+	// not the record decides who sees what.
+	if rec := as(t, s, aliceID, "GET", "/api/v1/sessions/s-shared", ""); rec.Code != http.StatusOK {
+		t.Fatalf("member denied a session they were added to: %d", rec.Code)
 	}
 }
 

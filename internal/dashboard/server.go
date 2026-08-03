@@ -3,7 +3,6 @@ package dashboard
 import (
 	"encoding/json"
 	"net/http"
-	"os"
 	"strconv"
 	"sync"
 	"syscall"
@@ -12,7 +11,6 @@ import (
 	"github.com/lassulus/covibe/internal/access"
 	"github.com/lassulus/covibe/internal/mux"
 	"github.com/lassulus/covibe/internal/spool"
-	"github.com/lassulus/covibe/internal/tmuxctl"
 )
 
 // Config configures the dashboard server.
@@ -99,7 +97,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/sessions", s.requireAPI(s.handleList))
 	mux.HandleFunc("POST /api/v1/sessions", s.requireAPI(s.handleCreate))
 	mux.HandleFunc("GET /api/v1/sessions/{id}", s.requireAPI(s.handleGetOne))
-	mux.HandleFunc("GET /api/v1/sessions/{id}/pane", s.requireAPI(s.handlePane))
 	mux.HandleFunc("GET /api/v1/sessions/{id}/screen", s.requireAPI(s.handleScreen))
 	mux.HandleFunc("POST /api/v1/sessions/{id}/input", s.requireAPI(s.handleInput))
 	// The terminal stream is a browser endpoint but lives on the API surface so
@@ -114,7 +111,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/users", s.requireAPI(s.handleUsers))
 	mux.HandleFunc("GET /api/v1/models", s.requireAPI(s.handleModels))
 	// Open announce surface (no key): any machine can register the session it is
-	// hosting (name + collab links) and push its pane. An announcement is kept
+	// hosting (name + collab links) and heartbeat. An announcement is kept
 	// only while the announcer keeps heartbeating (pane push) and GC'd when it
 	// stops; the server-minted session id is the capability for pushing a given
 	// session's pane. Killing (DELETE) stays gated — only the dashboard owner.
@@ -370,37 +367,6 @@ func (s *Server) handleGetOne(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.viewOf(rec, c))
-}
-
-// handlePane returns a snapshot of the session's terminal output, captured by
-// the session wrapper. ?strip=1 removes ANSI escapes for plain text.
-func (s *Server) handlePane(w http.ResponseWriter, r *http.Request) {
-	rec, _, ok := s.visibleRecord(w, r)
-	if !ok {
-		return
-	}
-	var out []byte
-	var err error
-	switch srv, ok := terminalServer(rec); {
-	case ok:
-		// tmux is the emulator: its grid is what a human sees. The wrapper's own
-		// ring buffer keeps every byte a TUI ever overwrote, so prefer this.
-		out, err = srv.Capture(tmuxTarget(srv, rec), tmuxctl.CaptureOpts{Escapes: r.URL.Query().Get("strip") != "1"})
-	default:
-		// A remote wrapper cannot be captured from here; it pushes its own
-		// snapshot with each heartbeat.
-		out, err = os.ReadFile(s.cfg.Store.PaneFilePath(rec.ID))
-	}
-	if err != nil {
-		http.Error(w, "pane unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	if r.URL.Query().Get("strip") == "1" {
-		out = stripANSI(out)
-	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write(out)
 }
 
 func (s *Server) handleQR(w http.ResponseWriter, r *http.Request) {

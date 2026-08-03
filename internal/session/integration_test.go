@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http/httptest"
-	"os"
 	"testing"
 
 	"github.com/lassulus/covibe/internal/dashboard"
@@ -45,14 +44,10 @@ func TestRemoteSinkAgainstDashboard(t *testing.T) {
 		t.Fatalf("server record: %+v err=%v", got, err)
 	}
 
-	// Heartbeat with a pane snapshot: not stopped, and the pane is stored.
-	stop, err := sink.heartbeat(context.Background(), rec.ID, []byte("live-pane"))
+	// A heartbeat keeps the announcement alive and is not told to stop.
+	stop, err := sink.heartbeat(context.Background(), rec.ID, nil)
 	if err != nil || stop {
 		t.Fatalf("heartbeat: stop=%v err=%v", stop, err)
-	}
-	pane, err := os.ReadFile(store.PaneFilePath(rec.ID))
-	if err != nil || string(pane) != "live-pane" {
-		t.Fatalf("pane file = %q err=%v", pane, err)
 	}
 
 	// After the session is ended (dashboard kill), the next heartbeat is told

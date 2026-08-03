@@ -140,7 +140,8 @@ func Run(cfg Config) error {
 		defer restore()
 	}
 
-	// Always-on ring of recent terminal output for the dashboard's pane view.
+	// Ring of recent terminal output: the snapshot a browser gets when it
+	// attaches to a session whose terminal is streamed from the pty.
 	pane := &paneBuffer{max: 64 << 10}
 	killed, stopWatch := sink.Watch(rec, pane)
 	defer stopWatch()
@@ -192,12 +193,12 @@ func Run(cfg Config) error {
 }
 
 // Sink is the lifecycle backend a session's wrapper drives around the omp PTY:
-// the local on-disk spool (unix-socket pane) or the dashboard REST API (remote).
+// the local on-disk spool, or the dashboard REST API (remote).
 type Sink interface {
 	// Register records the session at start (and may assign rec.ID).
 	Register(rec *spool.Record) error
-	// Watch runs background liveness/pane handling for the session's lifetime,
-	// reading snapshots from pane. It closes the returned channel if it observes
+	// Watch runs background liveness handling for the session's lifetime, with
+	// pane as the snapshot source. It closes the returned channel if it observes
 	// an external stop request (e.g. a dashboard kill); the returned func tears
 	// the watcher down.
 	Watch(rec *spool.Record, pane *paneBuffer) (killed <-chan struct{}, stop func())

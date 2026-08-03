@@ -25,7 +25,7 @@ const (
 )
 
 // RemoteTTL bounds how long a remote (REST-registered) record is considered
-// alive without a heartbeat. The remote wrapper pushes pane/heartbeat well
+// alive without a heartbeat. The remote wrapper heartbeats well
 // inside this window; a stale record (wrapper gone) is pruned by the dashboard.
 const RemoteTTL = 30 * time.Second
 
@@ -48,7 +48,7 @@ type Record struct {
 	RoomID     string    `json:"roomId,omitempty"` // covibe-minted collab room id (stable per session)
 	StartedAt  time.Time `json:"startedAt"`
 	UpdatedAt  time.Time `json:"updatedAt"`
-	Remote     bool      `json:"remote,omitempty"` // registered via REST from another machine; liveness is heartbeat-TTL, pane is pushed
+	Remote     bool      `json:"remote,omitempty"` // registered via REST from another machine; liveness is heartbeat-TTL, terminal comes from its host socket
 	Host       string    `json:"host,omitempty"`   // origin machine for remote sessions (display only)
 }
 
@@ -126,12 +126,6 @@ func (s *Store) Dir() string { return s.dir }
 
 func (s *Store) path(id string) string {
 	return filepath.Join(s.dir, id+".json")
-}
-
-// PaneFilePath is the regular file a remote wrapper's pushed pane snapshot is
-// stored at (remote sessions cannot serve the unix socket of PanePath).
-func (s *Store) PaneFilePath(id string) string {
-	return filepath.Join(s.dir, id+".pane")
 }
 
 // tmuxDir is the directory holding covibe's tmux server sockets.
@@ -244,7 +238,6 @@ func (s *Store) Load(id string) (*Record, error) {
 
 // Remove deletes a record file, ignoring absence.
 func (s *Store) Remove(id string) error {
-	_ = os.Remove(s.PaneFilePath(id))
 	err := os.Remove(s.path(id))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err

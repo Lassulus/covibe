@@ -143,9 +143,10 @@ pkgs.testers.runNixOSTest {
     assert one["browserUrl"] == "https://relay.test:7475/#abcdefgh12.keykeykeykeykeykeykeyZZ", one
     assert one["qr"].startswith("data:image/png;base64,"), one
 
-    # The pane endpoint returns the session's terminal output.
-    pane = machine.succeed(api(f"{API}/{sid}/pane?strip=1"))
-    assert "fake omp ready" in pane, pane
+    # The screen endpoint returns the session's rendered terminal, read straight
+    # from its tmux server.
+    screen = machine.succeed(api(f"{API}/{sid}/screen?format=text"))
+    assert "fake omp ready" in screen, screen
 
     # Unknown id → 404.
     code = machine.succeed(

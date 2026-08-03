@@ -54,14 +54,6 @@ func TestRemoteSessionRoundtrip(t *testing.T) {
 	if pr.Code != http.StatusOK || strings.Contains(pr.Body.String(), `"stop":true`) {
 		t.Fatalf("pane push: code=%d body=%s", pr.Code, pr.Body.String())
 	}
-	gr := httptest.NewRecorder()
-	greq := httptest.NewRequest("GET", "/api/v1/sessions/"+id+"/pane", nil)
-	greq.SetPathValue("id", id)
-	s.handlePane(gr, greq)
-	if gr.Code != http.StatusOK || gr.Body.String() != pane {
-		t.Fatalf("pane get: code=%d body=%q want %q", gr.Code, gr.Body.String(), pane)
-	}
-
 	// Kill from the dashboard: marks ended, never signals a (remote) pid.
 	kr := httptest.NewRecorder()
 	kreq := httptest.NewRequest("DELETE", "/api/v1/sessions/"+id, nil)
