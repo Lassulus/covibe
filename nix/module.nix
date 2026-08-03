@@ -12,6 +12,11 @@ let
   # server's PATH — a pre-existing tmux server started before a deploy
   # otherwise resolves "omp" to the old binary, which ignores OMP_COLLAB_*.
   ompBin = if cfg.ompPackage != null then "${cfg.ompPackage}/bin/omp" else cfg.omp;
+  # The peer-to-peer sidecar, and only when asked for: it is what makes a session
+  # reachable without the dashboard in the data path, and with iroh's default
+  # relays that also means outbound connections to third-party infrastructure. So
+  # it is opt-in, and p2p.relay points it at your own relay instead.
+  p2pBin = if cfg.p2p.enable && cfg.p2p.package != null then lib.getExe cfg.p2p.package else null;
   # When a self-hosted collab-web root is set, browser links point at covibe's
   # own /c/ instead of the default my.omp.sh client.
   webClientUrl =
@@ -34,6 +39,8 @@ let
     COVIBE_WEB_CLIENT = webClientUrl;
     COVIBE_LOCAL_RELAY = "ws://" + d.addr;
     COVIBE_MUX_SESSION = cfg.muxSession;
+    COVIBE_P2P = p2pBin;
+    COVIBE_P2P_RELAY = lib.optionalString cfg.p2p.enable cfg.p2p.relay;
     OMP_AUTH_BROKER_URL = cfg.authBrokerUrl;
   };
 
@@ -176,6 +183,38 @@ in
         env-driven supervised collab hosting plus the self-hosted collab-web SPA.
         null leaves omp resolution to PATH.
       '';
+    };
+
+    p2p = {
+      enable = lib.mkEnableOption ''
+        peer-to-peer session terminals. Each session mints a read-write and a
+        read-only iroh ticket, printed in its pane and recorded under
+        <stateDir>/p2p; `covibe attach --ticket <t>` then reaches the session
+        directly, with the dashboard in neither the data path nor the
+        authorization decision. A ticket is the whole credential and lives exactly
+        as long as the session it names, so it cannot be revoked individually —
+        ending the session is what invalidates it
+      '';
+
+      package = lib.mkOption {
+        type = lib.types.nullOr lib.types.package;
+        default = self.packages.${pkgs.stdenv.hostPlatform.system}.covibe-p2p;
+        defaultText = lib.literalExpression "covibe.packages.\${system}.covibe-p2p";
+        description = "The covibe-p2p sidecar holding each session's iroh endpoints.";
+      };
+
+      relay = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        example = "https://relay.example.com";
+        description = ''
+          iroh relay used for rendezvous and as the fallback path when a direct
+          connection cannot be established. Empty uses iroh's own public relays,
+          which means tickets reference third-party infrastructure; run
+          `iroh-relay` yourself and set this to keep that in-house. Traffic is
+          end-to-end encrypted either way, so a relay sees only ciphertext.
+        '';
+      };
     };
 
     authBrokerUrl = lib.mkOption {

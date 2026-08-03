@@ -29,6 +29,9 @@
           omp = pkgs.callPackage ./nix/omp.nix {
             baseOmp = llm-agents.packages.${system}.omp;
           };
+          # Rust sidecar holding a session's iroh endpoints, so the peer-to-peer
+          # terminal uses iroh first-party instead of reaching it through a Go port.
+          covibe-p2p = pkgs.callPackage ./nix/p2p.nix { };
         in
         {
           packages = {
@@ -36,9 +39,12 @@
             covibe = covibe;
             # omp carrying covibe's collab patch + the self-hosted collab-web SPA.
             omp = omp;
+            covibe-p2p = covibe-p2p;
             # covibe CLI with no backend baked in; override the addresses:
             #   covibe-client.override { dashboard = "https://covibe.example"; }
-            covibe-client = pkgs.callPackage ./nix/client.nix { inherit covibe omp; };
+            covibe-client = pkgs.callPackage ./nix/client.nix {
+              inherit covibe omp covibe-p2p;
+            };
           };
 
           apps.default = {
@@ -52,6 +58,10 @@
               pkgs.gopls
               pkgs.go-tools
               pkgs.tmux
+              pkgs.cargo
+              pkgs.rustc
+              pkgs.rustfmt
+              pkgs.clippy
             ];
           };
 

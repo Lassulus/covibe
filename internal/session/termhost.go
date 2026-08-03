@@ -291,9 +291,14 @@ func (h *termHost) readLoop(ctx context.Context, ws *websocket.Conn, enqueue fun
 
 // size reports the wrapper's current terminal size, which is what the session
 // renders at until a browser resizes it.
-func (h *termHost) size() (int, int) {
-	if h.ptmx != nil {
-		if rows, cols, err := pty.Getsize(h.ptmx); err == nil {
+func (h *termHost) size() (int, int) { return ptmxSize(h.ptmx) }
+
+// ptmxSize reports a wrapper's terminal size, clamped to something a pane can
+// be. Shared with the peer-to-peer terminal server, which advertises the same
+// shape in its hello.
+func ptmxSize(ptmx *os.File) (int, int) {
+	if ptmx != nil {
+		if rows, cols, err := pty.Getsize(ptmx); err == nil {
 			return clampTermSize(cols, rows)
 		}
 	}

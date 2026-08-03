@@ -1,7 +1,7 @@
 # `covibe` with a backend baked in: the CLI reads COVIBE_DASHBOARD,
-# COVIBE_RELAY_HOST, COVIBE_WEB_CLIENT, COVIBE_LOCAL_RELAY and COVIBE_OMP, so
-# pointing a machine at a covibe deployment is purely a matter of defaults — no
-# flags at the call site and no wrapper script.
+# COVIBE_RELAY_HOST, COVIBE_WEB_CLIENT, COVIBE_LOCAL_RELAY, COVIBE_OMP and
+# COVIBE_P2P, so pointing a machine at a covibe deployment is purely a matter of
+# defaults — no flags at the call site and no wrapper script.
 #
 # Every value is set with --set-default, so the environment still wins at
 # runtime, and each address is an argument: covibe hardcodes no deployment.
@@ -15,6 +15,10 @@
   makeBinaryWrapper,
   covibe,
   omp,
+  # The peer-to-peer sidecar. Passing it only makes `covibe attach --ticket`
+  # work out of the box; sessions still only mint tickets when COVIBE_P2P is set
+  # for the wrapper, which is a separate decision (nix/module.nix).
+  covibe-p2p ? null,
   dashboard ? "",
   relayHost ? "",
   webClient ? "",
@@ -35,10 +39,27 @@ stdenvNoCC.mkDerivation {
     makeWrapper ${lib.getExe covibe} $out/bin/covibe \
       ${lib.concatMapStringsSep " " (a: "--add-flags ${lib.escapeShellArg a}") defaultArgs} \
       --set-default COVIBE_OMP ${lib.getBin omp}/bin/omp \
-      ${lib.optionalString (dashboard != "") "--set-default COVIBE_DASHBOARD ${lib.escapeShellArg dashboard}"} \
-      ${lib.optionalString (relayHost != "") "--set-default COVIBE_RELAY_HOST ${lib.escapeShellArg relayHost}"} \
-      ${lib.optionalString (webClient != "") "--set-default COVIBE_WEB_CLIENT ${lib.escapeShellArg webClient}"} \
-      ${lib.optionalString (localRelay != "") "--set-default COVIBE_LOCAL_RELAY ${lib.escapeShellArg localRelay}"}
+      ${
+        lib.optionalString (
+          dashboard != ""
+        ) "--set-default COVIBE_DASHBOARD ${lib.escapeShellArg dashboard}"
+      } \
+      ${
+        lib.optionalString (
+          relayHost != ""
+        ) "--set-default COVIBE_RELAY_HOST ${lib.escapeShellArg relayHost}"
+      } \
+      ${
+        lib.optionalString (
+          webClient != ""
+        ) "--set-default COVIBE_WEB_CLIENT ${lib.escapeShellArg webClient}"
+      } \
+      ${
+        lib.optionalString (
+          localRelay != ""
+        ) "--set-default COVIBE_LOCAL_RELAY ${lib.escapeShellArg localRelay}"
+      } \
+      ${lib.optionalString (covibe-p2p != null) "--set-default COVIBE_P2P ${lib.getExe covibe-p2p}"}
     runHook postInstall
   '';
 

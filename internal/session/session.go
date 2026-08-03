@@ -40,6 +40,9 @@ type Config struct {
 	MuxSession string
 	MuxSocket  string // tmux server socket the session runs on (recorded for the dashboard)
 	Token      string // per-user dashboard API key; empty disables the remote terminal
+	StateDir   string // spool directory; also holds the peer-to-peer sockets and tickets
+	P2PBin     string // covibe-p2p sidecar; empty disables the peer-to-peer terminal
+	P2PRelay   string // optional iroh relay URL for the sidecar's tickets
 	Store      *spool.Store
 	Sink       Sink // lifecycle backend; nil uses the local on-disk spool (cfg.Store)
 }
@@ -146,23 +149,43 @@ func Run(cfg Config) error {
 	killed, stopWatch := sink.Watch(rec, pane)
 	defer stopWatch()
 
+	// One factory, two possible consumers: the dashboard's relayed terminal and
+	// the peer-to-peer sidecar. Each takes its own source — a tmux control
+	// client each, or its own subscription on the pty fan-out — so neither can
+	// stop the other's stream by tearing its own down.
+	var fan *fanout
+	newSource := func() termSource {
+		if cfg.MuxSocket != "" && cfg.MuxSession != "" {
+			return &tmuxSource{srv: tmuxctl.Server{Socket: cfg.MuxSocket}, session: cfg.MuxSession}
+		}
+		if fan == nil {
+			fan = newFanout()
+		}
+		return &ptySource{ptmx: ptmx, pane: pane, fan: fan}
+	}
+
 	// Remote terminal: the dashboard cannot dial this machine, so the wrapper
 	// dials out and relays its terminal to whoever opens it in the browser. It
 	// needs a per-user key to prove which user owns this session; without one
 	// (or without a dashboard) the session simply has no terminal, as before.
 	// Nothing here is allowed to affect omp: a broken relay is not a dead agent.
-	var fan *fanout
 	if ds, ok := sink.(dashboardSink); ok && cfg.Token != "" && ds.DashboardBase() != "" {
-		var src termSource
-		if cfg.MuxSocket != "" && cfg.MuxSession != "" {
-			src = &tmuxSource{srv: tmuxctl.Server{Socket: cfg.MuxSocket}, session: cfg.MuxSession}
-		} else {
-			fan = newFanout()
-			src = &ptySource{ptmx: ptmx, pane: pane, fan: fan}
-		}
-		host := newTermHost(ds, cfg.Token, !rec.ViewOnly, ptmx, src)
+		host := newTermHost(ds, cfg.Token, !rec.ViewOnly, ptmx, newSource())
 		host.start()
 		defer host.stop()
+	}
+
+	// Peer-to-peer terminal: the dashboard is not in this path at all, so it
+	// keeps working while the dashboard is down, restarting or absent. The
+	// tickets are the capability and they die with this process.
+	if cfg.P2PBin != "" {
+		side, err := startP2P(context.Background(), cfg, newSource(), ptmx, !rec.ViewOnly)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "covibe: peer-to-peer terminal unavailable: %v\n", err)
+		} else {
+			defer side.stop()
+			PrintTickets(os.Stderr, side.Tickets, !rec.ViewOnly)
+		}
 	}
 
 	// stdin → omp

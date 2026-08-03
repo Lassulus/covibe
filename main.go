@@ -46,6 +46,8 @@ func main() {
 		err = cmdList(os.Args[2:])
 	case "attach":
 		err = cmdAttach(os.Args[2:])
+	case "tickets":
+		err = cmdTickets(os.Args[2:])
 	case "serve":
 		err = cmdServe(os.Args[2:])
 	case "version", "--version", "-v":
@@ -70,7 +72,8 @@ usage:
   covibe start   <name> [flags]     open an omp session in a mux tab and share it
   covibe session         [flags]    (internal) pty-proxy run by the mux; wraps omp
   covibe list            [flags]    list sessions (--dashboard for a remote dashboard)
-  covibe attach  <name>  [flags]    join a session's terminal here (--dashboard for a remote one)
+  covibe attach  <name>  [flags]    join a session's terminal here (--dashboard remote, --ticket peer-to-peer)
+  covibe tickets [name]  [flags]    show the peer-to-peer tickets for sessions started here
   covibe serve           [flags]    run the OIDC-protected session dashboard
   covibe version
 
@@ -113,6 +116,8 @@ func cmdSession(args []string) error {
 	thinking := fs.String("thinking", env("COVIBE_THINKING", ""), "omp thinking level (optional)")
 	dashboardURL := fs.String("dashboard", env("COVIBE_DASHBOARD", ""), "dashboard base URL for remote registration; enables remote mode")
 	token := fs.String("token", env("COVIBE_TOKEN", ""), "per-user dashboard API key; makes the session owned and enables its web terminal")
+	p2pBin := fs.String("p2p", env("COVIBE_P2P", ""), "covibe-p2p sidecar binary; empty disables the peer-to-peer terminal")
+	p2pRelay := fs.String("p2p-relay", env("COVIBE_P2P_RELAY", ""), "iroh relay URL for peer-to-peer tickets (default: iroh's own relays)")
 	_ = fs.Parse(args)
 
 	if *dir == "" {
@@ -141,6 +146,9 @@ func cmdSession(args []string) error {
 		MuxSession: *muxSession,
 		MuxSocket:  *muxSocket,
 		Token:      *token,
+		StateDir:   *stateDir,
+		P2PBin:     *p2pBin,
+		P2PRelay:   *p2pRelay,
 	}
 	if *dashboardURL != "" {
 		remote := session.NewRemoteSink(*dashboardURL)
@@ -292,17 +300,20 @@ func cmdList(args []string) error {
 	return nil
 }
 
-// cmdAttach joins a session's terminal in this shell. On the host that runs it,
-// that means execing tmux against the session's own socket (a bare `tmux
-// attach` cannot find it). Given a dashboard URL it instead joins over the same
-// authenticated WebSocket the browser terminal uses, which works from anywhere
-// the dashboard is reachable and needs nothing but covibe and a token.
+// cmdAttach joins a session's terminal in this shell. Three ways in, ordered by
+// how little they need: a ticket goes straight to the session's own iroh endpoint
+// and involves no dashboard at all; a dashboard URL joins over the same
+// authenticated WebSocket the browser terminal uses; otherwise, on the host that
+// runs the session, it execs tmux against the session's own socket (a bare `tmux
+// attach` cannot find it).
 func cmdAttach(args []string) error {
 	fs := flag.NewFlagSet("attach", flag.ExitOnError)
 	stateDir := fs.String("state-dir", "", "spool directory")
 	readOnly := fs.Bool("read-only", false, "attach without being able to type (local sessions only)")
 	dashboardURL := fs.String("dashboard", env("COVIBE_DASHBOARD", ""), "dashboard base URL; attach over the network instead of locally")
 	token := fs.String("token", env("COVIBE_TOKEN", ""), "per-user API key for the dashboard")
+	ticket := fs.String("ticket", "", "peer-to-peer ticket for a session's terminal; needs no dashboard and no token")
+	p2pBin := fs.String("p2p", env("COVIBE_P2P", "covibe-p2p"), "covibe-p2p sidecar binary")
 	var posName string
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		posName, args = args[0], args[1:]
@@ -311,8 +322,15 @@ func cmdAttach(args []string) error {
 	if posName == "" && fs.NArg() > 0 {
 		posName = fs.Arg(0)
 	}
+	// A ticket names the session by itself; there is nothing to look up and
+	// nobody to ask, which is the point of it.
+	if *ticket != "" {
+		return withRawTerminal(func(ctx context.Context, o attach.Options) error {
+			return attach.RunTicket(ctx, o, *p2pBin, *ticket)
+		})
+	}
 	if posName == "" {
-		return fmt.Errorf("session name or id required")
+		return fmt.Errorf("session name or id required (or --ticket for a peer-to-peer attach)")
 	}
 	if *dashboardURL != "" {
 		return attachRemote(*dashboardURL, *token, posName)
@@ -406,10 +424,10 @@ func listRemote(base, token string, asJSON bool) error {
 	return nil
 }
 
-// attachRemote puts this terminal in raw mode and hands it to a session on
-// another machine through the dashboard. Raw mode and SIGWINCH live here rather
-// than in internal/attach so that package stays testable with plain pipes.
-func attachRemote(base, token, target string) error {
+// withRawTerminal puts this terminal in raw mode and hands it to an attach. Raw
+// mode and signal handling live here rather than in internal/attach so that
+// package stays testable with plain pipes.
+func withRawTerminal(run func(context.Context, attach.Options) error) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -429,15 +447,57 @@ func attachRemote(base, token, target string) error {
 	}
 	// Notices go to stderr: stdout is the far side's screen.
 	notify := func(line string) { fmt.Fprintf(os.Stderr, "covibe: %s\r\n", line) }
-	return attach.Run(ctx, attach.Options{
-		Base:   base,
-		Token:  token,
-		Target: target,
+	return run(ctx, attach.Options{
 		In:     os.Stdin,
 		Out:    os.Stdout,
 		Size:   size,
 		Notify: notify,
 	})
+}
+
+// attachRemote hands this terminal to a session on another machine through the
+// dashboard.
+func attachRemote(base, token, target string) error {
+	return withRawTerminal(func(ctx context.Context, o attach.Options) error {
+		o.Base, o.Token, o.Target = base, token, target
+		return attach.Run(ctx, o)
+	})
+}
+
+// cmdTickets prints the peer-to-peer tickets recorded for sessions started on
+// this machine. They are kept locally and never sent to a dashboard, so this is
+// the only place to get one back.
+func cmdTickets(args []string) error {
+	fs := flag.NewFlagSet("tickets", flag.ExitOnError)
+	stateDir := fs.String("state-dir", "", "spool directory")
+	var target string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		target, args = args[0], args[1:]
+	}
+	_ = fs.Parse(args)
+	if target == "" && fs.NArg() > 0 {
+		target = fs.Arg(0)
+	}
+	dir := *stateDir
+	if dir == "" {
+		store, err := spool.Open("")
+		if err != nil {
+			return err
+		}
+		dir = store.Dir()
+	}
+	tickets, err := session.LoadTickets(dir, target)
+	if err != nil {
+		return err
+	}
+	if len(tickets) == 0 {
+		fmt.Println("no peer-to-peer tickets recorded here")
+		return nil
+	}
+	for _, tk := range tickets {
+		session.PrintTickets(os.Stdout, tk, true)
+	}
+	return nil
 }
 
 // cmdServe runs the dashboard.
