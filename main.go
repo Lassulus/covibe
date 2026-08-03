@@ -19,7 +19,10 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/lassulus/covibe/internal/access"
+	"github.com/lassulus/covibe/internal/attach"
 	"github.com/lassulus/covibe/internal/dashboard"
 	"github.com/lassulus/covibe/internal/launch"
 	"github.com/lassulus/covibe/internal/session"
@@ -66,8 +69,8 @@ func usage() {
 usage:
   covibe start   <name> [flags]     open an omp session in a mux tab and share it
   covibe session         [flags]    (internal) pty-proxy run by the mux; wraps omp
-  covibe list            [flags]    list live sessions
-  covibe attach  <name>  [flags]    attach a local session's terminal in this shell
+  covibe list            [flags]    list sessions (--dashboard for a remote dashboard)
+  covibe attach  <name>  [flags]    join a session's terminal here (--dashboard for a remote one)
   covibe serve           [flags]    run the OIDC-protected session dashboard
   covibe version
 
@@ -243,7 +246,12 @@ func cmdList(args []string) error {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 	stateDir := fs.String("state-dir", "", "spool directory")
 	asJSON := fs.Bool("json", false, "emit JSON")
+	dashboardURL := fs.String("dashboard", env("COVIBE_DASHBOARD", ""), "dashboard base URL; list what this token can reach instead of the local spool")
+	token := fs.String("token", env("COVIBE_TOKEN", ""), "per-user API key for the dashboard")
 	_ = fs.Parse(args)
+	if *dashboardURL != "" {
+		return listRemote(*dashboardURL, *token, *asJSON)
+	}
 
 	store, err := spool.Open(*stateDir)
 	if err != nil {
@@ -284,14 +292,17 @@ func cmdList(args []string) error {
 	return nil
 }
 
-// cmdAttach hands this terminal to a session's tmux. covibe gives each session
-// its own socket, so a bare `tmux attach` cannot find these sessions; this resolves
-// the socket and session name from the spool record and execs tmux, which keeps
-// the attach as transparent as running tmux by hand.
+// cmdAttach joins a session's terminal in this shell. On the host that runs it,
+// that means execing tmux against the session's own socket (a bare `tmux
+// attach` cannot find it). Given a dashboard URL it instead joins over the same
+// authenticated WebSocket the browser terminal uses, which works from anywhere
+// the dashboard is reachable and needs nothing but covibe and a token.
 func cmdAttach(args []string) error {
 	fs := flag.NewFlagSet("attach", flag.ExitOnError)
 	stateDir := fs.String("state-dir", "", "spool directory")
-	readOnly := fs.Bool("read-only", false, "attach without being able to type")
+	readOnly := fs.Bool("read-only", false, "attach without being able to type (local sessions only)")
+	dashboardURL := fs.String("dashboard", env("COVIBE_DASHBOARD", ""), "dashboard base URL; attach over the network instead of locally")
+	token := fs.String("token", env("COVIBE_TOKEN", ""), "per-user API key for the dashboard")
 	var posName string
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		posName, args = args[0], args[1:]
@@ -302,6 +313,9 @@ func cmdAttach(args []string) error {
 	}
 	if posName == "" {
 		return fmt.Errorf("session name or id required")
+	}
+	if *dashboardURL != "" {
+		return attachRemote(*dashboardURL, *token, posName)
 	}
 	store, err := spool.Open(*stateDir)
 	if err != nil {
@@ -361,6 +375,69 @@ func cmdAttach(args []string) error {
 	// exec rather than fork: the user's terminal becomes tmux's, and detaching
 	// returns them to their shell with no covibe process in between.
 	return syscall.Exec(bin, argv, os.Environ())
+}
+
+// listRemote shows what a token can reach on a dashboard, so a user on another
+// machine can find the id to attach.
+func listRemote(base, token string, asJSON bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	sessions, err := attach.List(ctx, base, token)
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		return json.NewEncoder(os.Stdout).Encode(sessions)
+	}
+	if len(sessions) == 0 {
+		fmt.Println("no sessions you can reach")
+		return nil
+	}
+	for _, s := range sessions {
+		reach := "no terminal"
+		switch {
+		case s.HasTerminal && s.CanWrite:
+			reach = "terminal"
+		case s.HasTerminal:
+			reach = "terminal (read-only)"
+		}
+		fmt.Printf("%-16s %-20s %s\n\tid %s\n", s.Name, reach, s.Dir, s.ID)
+	}
+	return nil
+}
+
+// attachRemote puts this terminal in raw mode and hands it to a session on
+// another machine through the dashboard. Raw mode and SIGWINCH live here rather
+// than in internal/attach so that package stays testable with plain pipes.
+func attachRemote(base, token, target string) error {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	size := func() (int, int) {
+		cols, rows, err := term.GetSize(int(os.Stdout.Fd()))
+		if err != nil {
+			return 0, 0
+		}
+		return cols, rows
+	}
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		old, err := term.MakeRaw(int(os.Stdin.Fd()))
+		if err != nil {
+			return err
+		}
+		defer func() { _ = term.Restore(int(os.Stdin.Fd()), old) }()
+	}
+	// Notices go to stderr: stdout is the far side's screen.
+	notify := func(line string) { fmt.Fprintf(os.Stderr, "covibe: %s\r\n", line) }
+	return attach.Run(ctx, attach.Options{
+		Base:   base,
+		Token:  token,
+		Target: target,
+		In:     os.Stdin,
+		Out:    os.Stdout,
+		Size:   size,
+		Notify: notify,
+	})
 }
 
 // cmdServe runs the dashboard.
