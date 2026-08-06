@@ -57,7 +57,7 @@ index 5d9d103..8112e51 100644
  		this.#socket?.send({ t: "bye", reason });
  		await this.#teardown();
  	}
-@@ -689,3 +708,126 @@ export class CollabHost {
+@@ -689,3 +708,139 @@ export class CollabHost {
  		this.#ctx.ui.requestRender();
  	}
  }
@@ -157,7 +157,20 @@ index 5d9d103..8112e51 100644
 +					disconnectedMs,
 +				});
 +				disconnectedMs = 0;
-+				await current.stop("relay connection lost");
++				// Never let a failing teardown end supervision. This runs with a
++				// socket that is already gone, so `bye` can throw — and the call
++				// site only logs, so the throw would strand the room for the rest
++				// of the process. Drop the reference either way: the start below
++				// re-hosts the same room, keeping shared links and QR codes valid.
++				try {
++					await current.stop("relay connection lost");
++				} catch (err) {
++					logger.warn("collab autostart: stopping stale host failed", {
++						error: String(err),
++						room: cfg.preset?.roomId,
++					});
++					ctx.collabHost = undefined;
++				}
 +			}
 +		}
 +		// Joining someone else's session takes precedence over hosting ours.
