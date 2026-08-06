@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -26,6 +28,15 @@ func clip(s string, n int) string {
 		return s[:n]
 	}
 	return s
+}
+
+// sessionIDForRoom derives a stable record id from a collab room id. The room is
+// minted once per session and is the one identity that survives re-registration,
+// so hashing it yields a record id that is stable for the session's whole life
+// while keeping the id's shape identical to newSessionID's.
+func sessionIDForRoom(room string) string {
+	sum := sha256.Sum256([]byte(room))
+	return "covibe-" + hex.EncodeToString(sum[:8])
 }
 
 // handleRegister records a session hosted by a wrapper on another machine so it
@@ -62,14 +73,32 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid room id", http.StatusBadRequest)
 		return
 	}
-	if s.cfg.MaxSessions > 0 {
+	// Derive the record id from the room so a wrapper that re-registers — after a
+	// suspend, a dashboard restart, or a GC'd record — reclaims the same identity
+	// instead of minting a new one. Owner, member list and terminal host are all
+	// keyed by session id, and a random id silently orphaned every one of them.
+	// Rooms are unique per session, so distinct sessions still get distinct ids.
+	id := newSessionID()
+	if req.RoomID != "" {
+		id = sessionIDForRoom(req.RoomID)
+	}
+	// Reclaiming a record is not a new session: keep the original start time so
+	// the age column does not reset on every reconnect, and do not charge the
+	// reconnect against the session limit, which would lock a returning session
+	// out of a full dashboard.
+	startedAt := time.Now()
+	existing, _ := s.cfg.Store.Load(id)
+	if existing != nil && !existing.StartedAt.IsZero() {
+		startedAt = existing.StartedAt
+	}
+	if s.cfg.MaxSessions > 0 && existing == nil {
 		if live, _ := s.cfg.Store.Live(s.cfg.KeepEnded); len(live) >= s.cfg.MaxSessions {
 			http.Error(w, "session limit reached", http.StatusTooManyRequests)
 			return
 		}
 	}
 	rec := &spool.Record{
-		ID:         newSessionID(),
+		ID:         id,
 		Name:       req.Name,
 		Dir:        clip(req.Dir, 256),
 		Model:      req.Model,
@@ -82,7 +111,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		ViewOnly:   req.ViewOnly,
 		Remote:     true,
 		Status:     spool.StatusStarting,
-		StartedAt:  time.Now(),
+		StartedAt:  startedAt,
 	}
 	if err := s.cfg.Store.Save(rec); err != nil {
 		http.Error(w, "register failed: "+err.Error(), http.StatusInternalServerError)

@@ -66,8 +66,10 @@ func TestRemoteSinkAgainstDashboard(t *testing.T) {
 // TestRemoteSinkReregistersAfterDashboardForgets covers recovery after the
 // dashboard drops the record (restart wiped the spool, or GC pruned it while the
 // dashboard was down for a redeploy): the heartbeat comes back as errSessionGone
-// and the wrapper re-announces to get a fresh id, exactly what the Watch loop
-// does so the session reappears in the overview instead of vanishing forever.
+// and the wrapper re-announces, exactly what the Watch loop does so the session
+// reappears in the overview instead of vanishing forever. The reclaimed id is
+// the same one, because it is derived from the room — that is what keeps the
+// session's owner and member list attached across the round trip.
 func TestRemoteSinkReregistersAfterDashboardForgets(t *testing.T) {
 	store, err := spool.Open(t.TempDir())
 	if err != nil {
@@ -101,12 +103,12 @@ func TestRemoteSinkReregistersAfterDashboardForgets(t *testing.T) {
 		t.Fatalf("heartbeat after forget = %v, want errSessionGone", err)
 	}
 
-	// Recovery: re-register adopts a fresh id and the session is live again.
+	// Recovery: re-register reclaims the same id and the session is live again.
 	if err := sink.Register(rec); err != nil {
 		t.Fatalf("re-register: %v", err)
 	}
-	if rec.ID == "" || rec.ID == oldID {
-		t.Fatalf("re-register kept stale id %q -> %q", oldID, rec.ID)
+	if rec.ID != oldID {
+		t.Fatalf("re-register minted a new id %q, want the room's stable id %q", rec.ID, oldID)
 	}
 	stop, err := sink.heartbeat(context.Background(), rec.ID, []byte("live-again"))
 	if err != nil || stop {

@@ -13,8 +13,12 @@ import (
 
 // aclGrace is how long a session's access list survives without a matching
 // spool record. A session is authorized the moment it is created, a heartbeat
-// before its wrapper writes the record, so a young orphan is normal.
-const aclGrace = 5 * time.Minute
+// before its wrapper writes the record, so a young orphan is normal — but the
+// window must also outlast any downtime a session can return from. A suspended
+// laptop's record is gone all night while the wrapper reclaims its id in the
+// morning (see sessionIDForRoom); pruning in between would silently unshare the
+// session and hand it back ownerless.
+const aclGrace = 30 * 24 * time.Hour
 
 // memberView is one entry of a session's member list as the dashboard shows it.
 type memberView struct {
